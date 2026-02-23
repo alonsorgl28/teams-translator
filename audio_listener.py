@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import platform
+import threading
 import wave
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,8 @@ from typing import Optional
 
 import numpy as np
 import sounddevice as sd
+
+from config_utils import read_float_env
 
 
 @dataclass
@@ -29,6 +32,7 @@ class SystemAudioListener:
         sample_rate: int = 16000,
         channels: int = 1,
         preferred_device: Optional[str] = None,
+        drop_oldest_on_full: bool = True,
     ) -> None:
         self._loop = loop
         self._output_queue = output_queue
@@ -37,9 +41,13 @@ class SystemAudioListener:
         self._sample_rate = sample_rate
         self._channels = channels
         self._preferred_device = preferred_device
+        self._drop_oldest_on_full = drop_oldest_on_full
 
         self._stream: Optional[sd.InputStream] = None
         self._buffer = np.empty((0,), dtype=np.float32)
+        self._buffer_lock = threading.Lock()
+        max_buffer_seconds = read_float_env("AUDIO_MAX_BUFFER_SECONDS", 12.0)
+        self._max_buffer_frames = max(1, int(self._sample_rate * max_buffer_seconds))
         self._running = False
 
     @staticmethod
@@ -75,7 +83,8 @@ class SystemAudioListener:
             self._stream.stop()
             self._stream.close()
             self._stream = None
-        self._buffer = np.empty((0,), dtype=np.float32)
+        with self._buffer_lock:
+            self._buffer = np.empty((0,), dtype=np.float32)
 
     def _audio_callback(self, indata, frames, time_info, status) -> None:
         del frames, time_info
@@ -86,14 +95,21 @@ class SystemAudioListener:
             return
 
         mono = np.copy(indata[:, 0])
-        self._buffer = np.concatenate((self._buffer, mono))
+        samples_per_chunk = max(1, int(self._sample_rate * self._chunk_seconds))
+        samples_per_step = max(1, int(self._sample_rate * self._chunk_step_seconds))
+        chunks_to_publish: list[tuple[np.ndarray, datetime]] = []
+        with self._buffer_lock:
+            if not self._running:
+                return
+            self._buffer = np.concatenate((self._buffer, mono))
+            if self._buffer.shape[0] > self._max_buffer_frames:
+                self._buffer = self._buffer[-self._max_buffer_frames :]
+            while self._buffer.shape[0] >= samples_per_chunk:
+                raw_chunk = self._buffer[:samples_per_chunk].copy()
+                self._buffer = self._buffer[samples_per_step:]
+                chunks_to_publish.append((raw_chunk, datetime.now()))
 
-        samples_per_chunk = int(self._sample_rate * self._chunk_seconds)
-        samples_per_step = int(self._sample_rate * self._chunk_step_seconds)
-        while self._buffer.shape[0] >= samples_per_chunk:
-            raw_chunk = self._buffer[:samples_per_chunk]
-            self._buffer = self._buffer[samples_per_step:]
-            captured_at = datetime.now()
+        for raw_chunk, captured_at in chunks_to_publish:
             self._loop.call_soon_threadsafe(self._publish_chunk, raw_chunk, captured_at)
 
     def _publish_chunk(self, raw_chunk: np.ndarray, captured_at: datetime) -> None:
@@ -106,12 +122,16 @@ class SystemAudioListener:
         try:
             self._output_queue.put_nowait(chunk)
         except asyncio.QueueFull:
-            # Drop oldest queue item to keep latency bounded.
-            try:
-                self._output_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-            self._output_queue.put_nowait(chunk)
+            if self._drop_oldest_on_full:
+                # Drop oldest queue item to keep latency bounded.
+                try:
+                    self._output_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                self._output_queue.put_nowait(chunk)
+            else:
+                # Lossless mode: enqueue asynchronously instead of dropping audio.
+                self._loop.create_task(self._output_queue.put(chunk))
 
     def _resolve_input_device(self) -> Optional[str]:
         if self._preferred_device:

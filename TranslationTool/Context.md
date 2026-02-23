@@ -14,36 +14,48 @@ Construir un MVP local de escritorio que traduzca reuniones de Microsoft Teams e
 - Guardado de texto traducido solo si `Save Session` está habilitado.
 
 ## 3) Estado actual (actualizado)
-Fecha de actualización: 2026-02-14
+Fecha de actualización: 2026-02-23
 
 Implementado:
 - `/Users/hola/Documents/New project/audio_listener.py`
   - Captura de audio por `sounddevice`.
-  - Chunking asíncrono cada 3 segundos.
+  - Chunking asíncrono configurable por entorno.
   - Búsqueda de dispositivos loopback (VB-Cable/BlackHole).
   - Falla explícita si no encuentra dispositivo virtual válido (evita fallback a micrófono).
+  - Buffer de audio protegido con lock y límite en memoria (`AUDIO_MAX_BUFFER_SECONDS`).
 - `/Users/hola/Documents/New project/transcription_service.py`
   - Integración STT asíncrona con `whisper-1`.
-  - Detección automática de idioma.
+  - Detección automática de idioma con hint opcional (`TRANSCRIPTION_LANGUAGE_HINT`).
   - Reintentos básicos.
+  - Contexto de prompt configurable/desactivable para evitar deriva.
 - `/Users/hola/Documents/New project/translation_service.py`
   - Traducción a español con tono formal técnico.
-  - Preservación de términos críticos (AAAC, ACSR, OPGW, DDP, FOB, CIF).
+  - Preservación de términos críticos y números/unidades.
   - Validación de preservación de números/unidades con segunda pasada correctiva.
+  - Fallback de modelo configurable y contexto corto controlado.
 - `/Users/hola/Documents/New project/overlay_ui.py`
-  - Overlay oscuro ~70% opacidad, texto blanco.
-  - Últimos 10 segmentos, auto-scroll, slider de fuente.
+  - Overlay oscuro con modo `list` y modo `cinema`.
+  - Buffer completo acotado con `FULL_TRANSCRIPT_MAX_SEGMENTS`.
   - Ventana draggable y always-on-top.
-  - Botones requeridos + toggle de visibilidad del área de texto.
+  - Botones requeridos + panel de subtítulos en vivo.
+  - Corregido bug de visibilidad en transición Start/Stop (modo cinema).
 - `/Users/hola/Documents/New project/main.py`
   - Orquestación async con `qasync`.
   - Pipeline: Audio -> STT -> Traducción -> UI.
   - Buffer rolling de 60 minutos.
   - Save Session (solo texto traducido).
+  - Dedupe por `SequenceMatcher` manteniendo orden.
+  - Tarea de toggle referenciada/cancelable.
+  - Control de backlog audio/texto con descarte de cola vieja.
+  - Limpieza de ruido de transcripción (promos/URLs/repeticiones).
+  - Emisión de fragmentos calibrada por latencia y mínimo de palabras.
 - Soporte de proyecto:
   - `/Users/hola/Documents/New project/requirements.txt`
   - `/Users/hola/Documents/New project/.env.example`
   - `/Users/hola/Documents/New project/README.md`
+  - `/Users/hola/Documents/New project/config_utils.py`
+  - `/Users/hola/Documents/New project/metrics_reporter.py`
+  - `/Users/hola/Documents/New project/tests/` (unit tests de audio/UI/dedup/metrics/traducción)
 
 ## 4) Decisiones técnicas clave
 - Stack principal: Python + PyQt6 + asyncio/qasync.
@@ -52,10 +64,11 @@ Implementado:
 - No persistir audio por requisito de privacidad/scope.
 
 ## 5) Riesgos y pendientes
-- Prueba E2E real en Teams + dispositivo virtual en cada OS.
-- Medición real de latencia sostenida (<6s) bajo carga/red variable.
-- Mejorar selección de dispositivo desde UI (hoy: auto + variable `SYSTEM_AUDIO_DEVICE`).
-- Manejo de fallos de red/API más robusto (retries/backoff/circuit breaker).
+- Prueba E2E real en Teams + dispositivo virtual en cada OS (actualmente validación fuerte en YouTube).
+- Ajuste fino de equilibrio latencia vs precisión semántica por tipo de contenido.
+- Selector de dispositivo desde UI (hoy: auto + variable `SYSTEM_AUDIO_DEVICE`).
+- Estrategia de resiliencia de red/API más robusta (retries/backoff/circuit breaker).
+- Refinamiento visual de UI para lectura continua de subtítulos en sesiones largas.
 
 ## 6) Protocolo para cambios constantes (prompts futuros)
 1. Registrar el cambio pedido en la sección `Change Log`.
@@ -76,3 +89,12 @@ Tu idea de `memory.md` es buena como bitácora rápida. Recomendación:
   - Se agregó overlay con controles requeridos.
   - Se agregó buffer de 60 minutos y lógica de Save Session.
   - Se documentó setup/run y routing de audio virtual.
+- 2026-02-19:
+  - Se agregó instrumentación de métricas por segmento/sesión (`reports/*.json*`).
+  - Se formalizó plan de validación y seguimiento (`ValidationPlan.md`).
+- 2026-02-23:
+  - Se ejecutó remediación técnica de concurrencia/memoria/mantenibilidad (auditoría 15/15).
+  - Se añadió `config_utils.py` y se unificó lectura de variables de entorno.
+  - Se acotaron buffers en audio/UI y se reforzó deduplicación/limpieza de ruido.
+  - Se ajustó pipeline para menor latencia percibida y mejor legibilidad en tiempo real.
+  - Se ampliaron pruebas unitarias y validación de regresiones de visualización.

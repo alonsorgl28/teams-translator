@@ -9,6 +9,8 @@ from typing import Optional
 
 from openai import APIStatusError, AsyncOpenAI
 
+from config_utils import read_bool_env, read_int_env
+
 
 @dataclass
 class TranscriptionResult:
@@ -31,6 +33,11 @@ class WhisperTranscriptionService:
         self._model = model
         self._max_retries = max_retries
         self._prompt_context = ""
+        language_hint = (os.getenv("TRANSCRIPTION_LANGUAGE_HINT") or "").strip().lower()
+        self._language_hint = None if language_hint in {"", "auto"} else language_hint
+        self._context_enabled = read_bool_env("TRANSCRIPTION_CONTEXT_ENABLED", False)
+        self._context_max_chars = read_int_env("TRANSCRIPTION_CONTEXT_MAX_CHARS", 220)
+        self._base_prompt = (os.getenv("TRANSCRIPTION_BASE_PROMPT") or "").strip()
 
     async def transcribe(self, wav_bytes: bytes) -> TranscriptionResult:
         attempt = 0
@@ -41,17 +48,24 @@ class WhisperTranscriptionService:
             try:
                 audio_file = io.BytesIO(wav_bytes)
                 audio_file.name = "chunk.wav"
+                rolling_prompt = (
+                    self._prompt_context[-self._context_max_chars :]
+                    if self._context_enabled and self._prompt_context
+                    else ""
+                )
+                combined_prompt = " ".join(part for part in (self._base_prompt, rolling_prompt) if part).strip()
                 response = await self._client.audio.transcriptions.create(
                     model=self._model,
                     file=audio_file,
                     response_format="verbose_json",
                     temperature=0,
-                    prompt=self._prompt_context[-220:] if self._prompt_context else None,
+                    prompt=combined_prompt or None,
+                    language=self._language_hint,
                 )
 
                 text = self._read_value(response, "text").strip()
                 language = self._read_value(response, "language").strip().lower() or "unknown"
-                if text:
+                if text and self._context_enabled:
                     # Keep a short rolling context to improve short-chunk continuity.
                     self._prompt_context = f"{self._prompt_context} {text}".strip()[-500:]
                 return TranscriptionResult(
@@ -71,6 +85,9 @@ class WhisperTranscriptionService:
                 await asyncio.sleep(0.4 * attempt)
 
         raise RuntimeError(f"Transcription failed after retries: {last_error}") from last_error
+
+    def reset_context(self) -> None:
+        self._prompt_context = ""
 
     @staticmethod
     def _read_value(response, key: str) -> str:
