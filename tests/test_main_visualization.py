@@ -81,6 +81,26 @@ class VisualizationBehaviorTests(unittest.TestCase):
         self.assertNotIn("ysgrifennydd", lowered)
         self.assertLessEqual(lowered.count("hola"), 3)
 
+    def test_stale_segment_is_dropped_before_render(self) -> None:
+        original_stale = os.environ.get("MAX_SEGMENT_STALENESS_SECONDS")
+        os.environ["MAX_SEGMENT_STALENESS_SECONDS"] = "0.2"
+        loop = asyncio.new_event_loop()
+        try:
+            window = OverlayWindow()
+            controller = MeetingTranslatorController(window, loop)
+            old_capture = datetime.now() - timedelta(seconds=0.6)
+            controller._emit_segment("texto tardío", old_capture, "en", api_time=0.3, metrics_data={})
+            self.assertEqual(window.get_full_transcript_text(), "")
+            self.assertEqual(controller.skipped_stale_segments, 1)
+            controller.shutdown_sync()
+            window.close()
+        finally:
+            loop.close()
+            if original_stale is None:
+                os.environ.pop("MAX_SEGMENT_STALENESS_SECONDS", None)
+            else:
+                os.environ["MAX_SEGMENT_STALENESS_SECONDS"] = original_stale
+
 
 if __name__ == "__main__":
     unittest.main()

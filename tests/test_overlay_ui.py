@@ -40,7 +40,7 @@ class OverlayBufferTests(unittest.TestCase):
         try:
             window = OverlayWindow()
             self.assertTrue(window.subtitle_box.isHidden())
-            self.assertFalse(window.transcript_view.isHidden())
+            self.assertTrue(window.transcript_view.isHidden())
 
             window._on_start_stop_clicked()
             self.assertFalse(window.subtitle_box.isHidden())
@@ -48,12 +48,11 @@ class OverlayBufferTests(unittest.TestCase):
 
             window.append_segment("[00:01] hola mundo")
             window._flush_cinema_text()
-            self.assertIn(">> hola mundo", window.subtitle_curr_label.text())
+            self.assertIn("hola mundo", window.subtitle_curr_label.text())
 
             window._on_start_stop_clicked()
             self.assertTrue(window.subtitle_box.isHidden())
-            self.assertFalse(window.transcript_view.isHidden())
-            self.assertIn("hola mundo", window.transcript_view.toPlainText())
+            self.assertTrue(window.transcript_view.isHidden())
             window.close()
         finally:
             if original_mode is None:

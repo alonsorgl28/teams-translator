@@ -65,6 +65,7 @@ class TechnicalTranslationService:
         if fallback_model and fallback_model not in self._models:
             self._models.append(fallback_model)
         self._active_model_index = 0
+        self._max_completion_tokens = read_int_env("TRANSLATION_MAX_TOKENS", 120)
         self.last_error: Optional[str] = None
         raw_terms = (os.getenv("PROTECTED_TERMS") or "").strip()
         self._protected_terms = [term.strip() for term in raw_terms.split(",") if term.strip()]
@@ -78,12 +79,13 @@ class TechnicalTranslationService:
         self._term_memory_size = read_int_env("TERM_MEMORY_SIZE", 24)
         self._term_min_count = read_int_env("TERM_MIN_COUNT", 2)
 
-    async def translate_text(self, text: str) -> str:
+    async def translate_text(self, text: str, target_language: str = "Spanish") -> str:
         self.last_error = None
         cleaned = self._sanitize(text)
         if not cleaned:
             return ""
-        if self._looks_spanish(cleaned):
+        normalized_target = self._normalize_target_language(target_language)
+        if normalized_target.lower() == "spanish" and self._looks_spanish(cleaned):
             return cleaned
 
         number_tokens = self._extract_numeric_tokens(cleaned)
@@ -94,6 +96,7 @@ class TechnicalTranslationService:
             translated = await self._translate_once(
                 cleaned,
                 number_tokens,
+                target_language=normalized_target,
                 recent_source_context=recent_source_context,
                 recent_translation_context=recent_translation_context,
                 session_terms=session_terms,
@@ -102,6 +105,7 @@ class TechnicalTranslationService:
                 retry = await self._translate_literal(
                     cleaned,
                     number_tokens,
+                    target_language=normalized_target,
                     recent_source_context=recent_source_context,
                     session_terms=session_terms,
                 )
@@ -111,8 +115,13 @@ class TechnicalTranslationService:
                     self.last_error = "translation_refusal_fallback_source"
                     return cleaned
             if self._numbers_preserved(number_tokens, translated):
-                self._remember_turn(cleaned, translated)
-                return translated
+                normalized_output = (
+                    self._repair_spanish_residual_english(translated)
+                    if normalized_target.lower() == "spanish"
+                    else translated
+                )
+                self._remember_turn(cleaned, normalized_output)
+                return normalized_output
 
             strict_prompt = (
                 "Repair the Spanish translation below. Keep ALL numbers and units exactly as provided, "
@@ -121,11 +130,25 @@ class TechnicalTranslationService:
                 f"Current translation:\n{translated}\n\n"
                 f"Tokens that MUST remain exact: {', '.join(number_tokens) if number_tokens else 'None'}"
             )
+            if normalized_target.lower() != "spanish":
+                strict_prompt = (
+                    "Repair the translation below. Keep ALL numbers and units exactly as provided, "
+                    f"without formatting changes. Keep technical tone in {normalized_target}. "
+                    "Return only corrected translated text.\n\n"
+                    f"Source:\n{cleaned}\n\n"
+                    f"Current translation:\n{translated}\n\n"
+                    f"Tokens that MUST remain exact: {', '.join(number_tokens) if number_tokens else 'None'}"
+                )
             repaired = await self._chat(strict_prompt)
             if self._is_refusal_like(repaired):
                 self.last_error = "translation_refusal_on_repair"
-                return translated or cleaned
+                fallback = translated or cleaned
+                if normalized_target.lower() == "spanish":
+                    return self._repair_spanish_residual_english(fallback)
+                return fallback
             final_translation = repaired if repaired else translated
+            if normalized_target.lower() == "spanish":
+                final_translation = self._repair_spanish_residual_english(final_translation)
             self._remember_turn(cleaned, final_translation)
             return final_translation
         except Exception as exc:  # noqa: BLE001 - graceful fallback
@@ -136,6 +159,7 @@ class TechnicalTranslationService:
         self,
         source_text: str,
         number_tokens: list[str],
+        target_language: str,
         recent_source_context: str,
         recent_translation_context: str,
         session_terms: str,
@@ -143,9 +167,9 @@ class TechnicalTranslationService:
         numbers_line = ", ".join(number_tokens) if number_tokens else "None"
         system_prompt = (
             "You are a real-time transcript translator for meetings.\n"
-            "Translate the input fragment into neutral Spanish.\n"
+            f"Translate the input fragment into neutral {target_language}.\n"
             "Rules:\n"
-            "1) If input is already Spanish, return it unchanged.\n"
+            f"1) If input is already {target_language}, return it unchanged.\n"
             "2) Keep proper names, acronyms, numbers, units, and identifiers exactly when present.\n"
             "3) Keep the same level of certainty and tone. Do not summarize, shorten, or paraphrase away details.\n"
             "4) This is transformation only. Never refuse, apologize, explain, or add safety disclaimers.\n"
@@ -156,6 +180,7 @@ class TechnicalTranslationService:
         )
         prompt_lines = [
             f"Supported language set: {', '.join(self._SUPPORTED_LANGS)}",
+            f"Target language: {target_language}",
             f"Number/unit tokens to preserve exactly: {numbers_line}",
             f"Protected terms from env: {', '.join(self._protected_terms) if self._protected_terms else 'None'}",
         ]
@@ -173,17 +198,21 @@ class TechnicalTranslationService:
         self,
         source_text: str,
         number_tokens: list[str],
+        target_language: str,
         recent_source_context: str,
         session_terms: str,
     ) -> str:
         numbers_line = ", ".join(number_tokens) if number_tokens else "None"
         system_prompt = (
-            "Translate the transcript fragment to Spanish literally.\n"
+            f"Translate the transcript fragment to {target_language} literally.\n"
             "Do not refuse, do not explain, and do not add any extra text.\n"
             "Use context only for terminology disambiguation; do not add unseen content.\n"
-            "Return only translated Spanish."
+            f"Return only translated {target_language}."
         )
-        prompt_lines = [f"Keep these tokens exact if they appear: {numbers_line}"]
+        prompt_lines = [
+            f"Target language: {target_language}",
+            f"Keep these tokens exact if they appear: {numbers_line}",
+        ]
         if session_terms:
             prompt_lines.append(f"Session glossary: {session_terms}")
         if recent_source_context:
@@ -191,6 +220,41 @@ class TechnicalTranslationService:
         prompt_lines.append(f"Text:\n{source_text}")
         user_prompt = "\n\n".join(prompt_lines)
         return await self._chat(user_prompt, system_prompt)
+
+    @staticmethod
+    def _normalize_target_language(target_language: str) -> str:
+        raw = (target_language or "").strip()
+        if not raw:
+            return "Spanish"
+        aliases = {
+            "es": "Spanish",
+            "en": "English",
+            "pt": "Portuguese (Brazil)",
+            "pt-br": "Portuguese (Brazil)",
+            "zh": "Mandarin Chinese (Simplified)",
+            "zh-cn": "Mandarin Chinese (Simplified)",
+            "hi": "Hindi",
+        }
+        lowered = raw.lower()
+        return aliases.get(lowered, raw)
+
+    @staticmethod
+    def _repair_spanish_residual_english(text: str) -> str:
+        if not text:
+            return text
+        repaired = text
+        substitutions = (
+            (r"\bYou\b(?!Tube)", "tú"),
+            (r"\bmodel\b", "modelo"),
+            (r"\bmodels\b", "modelos"),
+            (r"\bwith\b", "con"),
+            (r"\band\b", "y"),
+            (r"\bcode\b", "código"),
+        )
+        for pattern, replacement in substitutions:
+            repaired = re.sub(pattern, replacement, repaired, flags=re.IGNORECASE)
+        repaired = re.sub(r"\s+", " ", repaired).strip()
+        return repaired
 
     async def _chat(self, user_prompt: str, system_prompt: Optional[str] = None) -> str:
         messages = []
@@ -205,6 +269,7 @@ class TechnicalTranslationService:
                     model=model_name,
                     temperature=0.0,
                     messages=messages,
+                    max_tokens=self._max_completion_tokens,
                 )
                 content = response.choices[0].message.content or ""
                 return self._sanitize(content)

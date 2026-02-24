@@ -13,6 +13,7 @@ from time import perf_counter
 from typing import Any, Optional
 
 from dotenv import load_dotenv
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 from qasync import QEventLoop
 
@@ -47,6 +48,90 @@ class RollingTranscriptBuffer:
             self._entries.popleft()
 
 
+class OverlayPreviewRunner:
+    PREVIEW_TICK_MS = 1100
+    PREVIEW_SEGMENTS = (
+        "Quizás podemos hablar de los dos competidores actuales.",
+        "Codex tiende a leer más contexto y eso mejora la calidad del código.",
+        "Opus suele responder más rápido y con un estilo más conversacional.",
+        "En tareas complejas, ambos funcionan bien si defines objetivos claros.",
+        "La diferencia práctica aparece en persistencia, velocidad y estilo de respuesta.",
+        "Si priorizas latencia baja, este modo usa segmentos cortos pero legibles.",
+    )
+    PREVIEW_LATENCIES = (1.5, 1.7, 1.9, 2.1, 2.3, 2.0)
+
+    def __init__(self, ui: OverlayWindow) -> None:
+        self.ui = ui
+        self._running = False
+        self._segment_idx = 0
+        self._latency_idx = 0
+        self._ticker = QTimer(ui)
+        self._ticker.timeout.connect(self._emit_next_segment)
+
+        self.ui.toggle_listening.connect(self._on_toggle_listening)
+        self.ui.copy_requested.connect(self._on_copy_requested)
+        self.ui.export_requested.connect(self._on_export_requested)
+        self.ui.clear_requested.connect(self._on_clear_requested)
+        self.ui.debug_toggled.connect(self._on_debug_toggled)
+
+    def start(self) -> None:
+        self._running = True
+        self.ui.set_debug_mode(True)
+        self.ui.set_listening(True)
+        self.ui.set_status("Preview mode activo: simulando subtítulos en tiempo real.")
+        self._ticker.start(self.PREVIEW_TICK_MS)
+        self._emit_next_segment()
+
+    def stop(self) -> None:
+        self._running = False
+        self._ticker.stop()
+        self.ui.set_listening(False)
+        self.ui.set_status("Preview detenido.")
+
+    def _on_toggle_listening(self, should_listen: bool) -> None:
+        if should_listen:
+            if not self._running:
+                self._running = True
+            if not self._ticker.isActive():
+                self._ticker.start(self.PREVIEW_TICK_MS)
+            self.ui.set_status("Preview mode activo: simulando subtítulos en tiempo real.")
+            return
+        self._running = False
+        self._ticker.stop()
+        self.ui.set_status("Preview detenido.")
+
+    def _on_copy_requested(self) -> None:
+        QApplication.clipboard().setText(self.ui.get_full_transcript_text())
+        self.ui.set_status("Preview: transcript copiado al portapapeles.")
+
+    def _on_export_requested(self, path: str) -> None:
+        Path(path).write_text(self.ui.get_full_transcript_text(), encoding="utf-8")
+        self.ui.set_status(f"Preview: exportado en {Path(path).name}.")
+
+    def _on_clear_requested(self) -> None:
+        self.ui.clear_segments()
+        self.ui.set_status("Preview: texto visible limpiado.")
+
+    def _on_debug_toggled(self, enabled: bool) -> None:
+        self.ui.set_debug_mode(enabled)
+
+    def _emit_next_segment(self) -> None:
+        if not self._running:
+            return
+        segment = self.PREVIEW_SEGMENTS[self._segment_idx % len(self.PREVIEW_SEGMENTS)]
+        stamp = datetime.now().strftime("%M:%S")
+        self.ui.append_segment(f"[{stamp}] {segment}")
+        self._segment_idx += 1
+        self._update_runtime_labels()
+
+    def _update_runtime_labels(self) -> None:
+        latency = self.PREVIEW_LATENCIES[self._latency_idx % len(self.PREVIEW_LATENCIES)]
+        self._latency_idx += 1
+        self.ui.set_status(f"Live preview (english -> es) | {latency:.1f}s")
+        color = "#2ecc71" if latency < 2.2 else "#f1c40f"
+        self.ui.set_debug_info(f"AVG 1.92s | P95 2.45s | Issue 0.0%", color)
+
+
 class MeetingTranslatorController:
     RECENT_RENDERED_MAXLEN = 5
     DUPLICATE_SEQUENCE_RATIO = 0.98
@@ -70,6 +155,8 @@ class MeetingTranslatorController:
     def __init__(self, ui: OverlayWindow, loop: asyncio.AbstractEventLoop) -> None:
         self.ui = ui
         self.loop = loop
+        self.source_language = (os.getenv("SOURCE_LANGUAGE") or "Auto-detect").strip() or "Auto-detect"
+        self.target_language = (os.getenv("TARGET_LANGUAGE") or "Spanish").strip() or "Spanish"
         self.literal_complete_mode = read_bool_env("LITERAL_COMPLETE_MODE", False)
         self.short_timestamps = read_bool_env("SHORT_TIMESTAMPS", True)
         default_audio_q = 24 if self.literal_complete_mode else 8
@@ -91,7 +178,7 @@ class MeetingTranslatorController:
             preferred_device=os.getenv("SYSTEM_AUDIO_DEVICE"),
             drop_oldest_on_full=not self.literal_complete_mode,
         )
-        default_skip = 999999 if self.literal_complete_mode else 3
+        default_skip = 999999 if self.literal_complete_mode else 2
         self.max_audio_backlog_before_skip = read_int_env("MAX_AUDIO_BACKLOG_BEFORE_SKIP", default_skip)
         self.max_text_backlog_before_skip = read_int_env(
             "MAX_TEXT_BACKLOG_BEFORE_SKIP",
@@ -104,6 +191,10 @@ class MeetingTranslatorController:
         self.max_pending_render_age_seconds = read_float_env(
             "MAX_PENDING_RENDER_AGE_SECONDS",
             2.2 if self.literal_complete_mode else 1.4,
+        )
+        self.max_segment_staleness_seconds = read_float_env(
+            "MAX_SEGMENT_STALENESS_SECONDS",
+            8.0 if self.literal_complete_mode else 3.0,
         )
         self.transcriber: Optional[WhisperTranscriptionService] = None
         self.translator: Optional[TechnicalTranslationService] = None
@@ -123,6 +214,7 @@ class MeetingTranslatorController:
         self.translation_fallbacks = 0
         self.skipped_audio_chunks = 0
         self.skipped_text_chunks = 0
+        self.skipped_stale_segments = 0
         self.last_api_time = 0.0
         self.metrics_min_text_len = read_int_env("METRICS_MIN_TEXT_LEN", 8)
         self.metrics_reporter = SessionMetricsReporter(
@@ -145,9 +237,13 @@ class MeetingTranslatorController:
         self.ui.clear_requested.connect(self._on_clear_requested)
         self.ui.save_session_changed.connect(self._on_save_session_changed)
         self.ui.debug_toggled.connect(self._on_debug_toggled)
+        self.ui.language_settings_changed.connect(self._on_language_settings_changed)
+        self.ui.audio_source_changed.connect(self._on_audio_source_changed)
         self.ui.set_debug_mode(self.debug_enabled)
 
-        self.ui.set_status("Idle. Select VB-Cable/BlackHole as the system output device.")
+        self.ui.set_status(
+            f"Idle. Target language: {self.target_language}. Select VB-Cable/BlackHole as system output."
+        )
 
     async def start(self) -> None:
         if self.running:
@@ -227,6 +323,8 @@ class MeetingTranslatorController:
                     self.skipped_audio_chunks += skipped
                     if self.debug_enabled and skipped:
                         logging.info("debug_skip_audio skipped=%d backlog=%d", skipped, audio_backlog)
+                if self._drop_stale_chunk(chunk.captured_at, stage="transcription"):
+                    continue
 
                 transcription_start_ts = datetime.now()
                 started = perf_counter()
@@ -327,10 +425,15 @@ class MeetingTranslatorController:
                     self.skipped_text_chunks += skipped
                     if self.debug_enabled and skipped:
                         logging.info("debug_skip_text skipped=%d backlog=%d", skipped, backlog)
+                if self._drop_stale_chunk(chunk.captured_at, stage="translation"):
+                    continue
 
                 translation_start_ts = datetime.now()
                 started = perf_counter()
-                translated = await self.translator.translate_text(source_text)  # type: ignore[union-attr]
+                translated = await self.translator.translate_text(  # type: ignore[union-attr]
+                    source_text,
+                    target_language=self.target_language,
+                )
                 fallback_reason = self.translator.last_error or ""  # type: ignore[union-attr]
                 if fallback_reason:
                     self.translation_fallbacks += 1
@@ -462,6 +565,19 @@ class MeetingTranslatorController:
         if enabled:
             self._update_debug_panel(language="auto")
 
+    def _on_language_settings_changed(self, source_language: str, target_language: str) -> None:
+        self.source_language = source_language
+        self.target_language = target_language
+        self.ui.set_status(f"Settings applied: {source_language} -> {target_language}.")
+
+    def _on_audio_source_changed(self, audio_source: str) -> None:
+        selected = (audio_source or "").strip()
+        if selected and selected.lower() != "system loopback (default)":
+            self.listener._preferred_device = selected
+        else:
+            self.listener._preferred_device = None
+        self.ui.set_status("Audio source updated. Restart listening to apply it.")
+
     def _full_transcript_text(self) -> str:
         if self.ui.save_session_enabled:
             return "\n".join(self.saved_session_text)
@@ -482,8 +598,26 @@ class MeetingTranslatorController:
             color = "#f1c40f"
 
         del language, api_time
-        debug_text = f"AVG {avg_latency:.2f}s | P95 {p95_latency:.2f}s | Issue {issue_rate:.1f}%"
+        debug_text = (
+            f"AVG {avg_latency:.2f}s | P95 {p95_latency:.2f}s | "
+            f"Stale {self.skipped_stale_segments} | Issue {issue_rate:.1f}%"
+        )
         self.ui.set_debug_info(debug_text, color)
+
+    def _drop_stale_chunk(self, captured_at: datetime, stage: str) -> bool:
+        age_s = (datetime.now() - captured_at).total_seconds()
+        if age_s <= self.max_segment_staleness_seconds:
+            return False
+        self.skipped_stale_segments += 1
+        if self.debug_enabled:
+            logging.info(
+                "debug_drop_stale stage=%s age_s=%.3f threshold_s=%.3f captured_at=%s",
+                stage,
+                age_s,
+                self.max_segment_staleness_seconds,
+                captured_at.isoformat(timespec="milliseconds"),
+            )
+        return True
 
     def _is_duplicate_segment(self, rendered_text: str) -> bool:
         normalized = re.sub(r"^\[[0-9:]{5,8}\]\s*", "", rendered_text).strip().lower()
@@ -687,6 +821,8 @@ class MeetingTranslatorController:
         api_time: float,
         metrics_data: Optional[dict[str, Any]] = None,
     ) -> None:
+        if self._drop_stale_chunk(captured_at, stage="emit"):
+            return
         cleaned = self._trim_overlap_with_previous_emitted(translated_text)
         if not cleaned:
             return
@@ -725,10 +861,11 @@ class MeetingTranslatorController:
                 self.chunks_processed,
             )
         lang_label = source_language or "auto"
+        target_code = self._target_language_code(self.target_language)
         if lang_label.lower() not in self.SUPPORTED_LANG_CODES:
-            self.ui.set_status(f"Live (detected {lang_label}) -> es | {latency:.1f}s")
+            self.ui.set_status(f"Live (detected {lang_label}) -> {target_code} | {latency:.1f}s")
         else:
-            self.ui.set_status(f"Live ({lang_label}) -> es | {latency:.1f}s")
+            self.ui.set_status(f"Live ({lang_label}) -> {target_code} | {latency:.1f}s")
 
     def _flush_pending_render(self, language: str) -> None:
         pending = self._pending_render_text.strip()
@@ -747,6 +884,18 @@ class MeetingTranslatorController:
         cleaned = re.sub(r"^\.\.\.\s*", "", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned)
         return cleaned.strip()
+
+    @staticmethod
+    def _target_language_code(language: str) -> str:
+        normalized = (language or "").strip().lower()
+        mapping = {
+            "spanish": "es",
+            "english": "en",
+            "portuguese (brazil)": "pt-br",
+            "mandarin chinese (simplified)": "zh-cn",
+            "hindi": "hi",
+        }
+        return mapping.get(normalized, normalized or "target")
 
     def _merge_fragments(self, current: str, incoming: str) -> str:
         if not current:
@@ -941,15 +1090,22 @@ def main() -> None:
     log_level_name = (os.getenv("LOG_LEVEL", "INFO") or "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
     logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(message)s")
+    preview_mode = "--preview-ui" in sys.argv
+    qt_args = [arg for arg in sys.argv if arg != "--preview-ui"]
 
-    app = QApplication(sys.argv)
+    app = QApplication(qt_args)
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 
     overlay = OverlayWindow()
-    controller = MeetingTranslatorController(overlay, loop)
-    app.aboutToQuit.connect(controller.shutdown_sync)
     overlay.show()
+    if preview_mode:
+        preview = OverlayPreviewRunner(overlay)
+        app.aboutToQuit.connect(preview.stop)
+        preview.start()
+    else:
+        controller = MeetingTranslatorController(overlay, loop)
+        app.aboutToQuit.connect(controller.shutdown_sync)
 
     with loop:
         loop.run_forever()

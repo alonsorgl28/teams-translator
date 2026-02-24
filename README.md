@@ -71,22 +71,41 @@ cp .env.example .env
 - `LITERAL_COMPLETE_MODE` (default: `0`)
   - `0` prioritizes real-time visual updates (recommended for live meetings).
   - `1` prioritizes longer, more complete segments at the cost of latency.
-- `SUBTITLE_MODE` (default: `list`)
+- `APP_BRAND_NAME` (default: `Auralink`)
+  - Visible product name in the overlay header and settings dialog.
+- `SOURCE_LANGUAGE` (default: `Auto-detect`)
+  - Initial source language shown in settings (`From`).
+- `TARGET_LANGUAGE` (default: `Spanish`)
+  - Initial target language shown in settings (`To`) and used by translation runtime.
+- `SUBTITLE_MODE` (default: `cinema`)
+  - `cinema` shows subtitle-style live lines while listening.
   - `list` keeps transcript lines visible while listening.
-  - `cinema` focuses on subtitle-style live lines and hides list history while active.
+- `SUBTITLE_UPDATE_MS` (default sample: `220`)
+  - Interval used to flush pending subtitle chunks into visible text.
+  - Lower values feel faster; values too low can increase fragment noise.
+- `TRANSCRIPTION_MODEL` (default in sample `.env`: `gpt-4o-mini-transcribe`)
+  - Primary speech-to-text model.
+  - If unavailable in your account/region, runtime falls back to `TRANSCRIPTION_FALLBACK_MODEL`.
+- `TRANSCRIPTION_FALLBACK_MODEL` (default in sample `.env`: `whisper-1`)
+  - Automatic fallback STT model when the primary model returns unsupported-model errors.
 - `TRANSLATION_MODEL` (default in sample `.env`: `gpt-4o-mini`)
-  - Primary translation model.
-  - Use `gpt-4o-mini` for lowest latency; use `gpt-4.1-mini` when quality is prioritized over speed.
+  - Primary translation model (latency-first default).
+  - Use `gpt-4o-mini` for lowest latency; switch to `gpt-4.1-mini` when quality is prioritized over speed.
 - `TRANSLATION_FALLBACK_MODEL` (default in sample `.env`: `gpt-4.1-mini`)
   - Automatic fallback if the primary model fails with model/availability errors.
-- `MAX_AUDIO_BACKLOG_BEFORE_SKIP` / `MAX_TEXT_BACKLOG_BEFORE_SKIP` (sample profile: `1`)
+- `TRANSLATION_MAX_TOKENS` (default sample: `120`)
+  - Hard cap for translation output tokens to reduce long run-on outputs and latency variance.
+- `MAX_AUDIO_BACKLOG_BEFORE_SKIP` / `MAX_TEXT_BACKLOG_BEFORE_SKIP` (sample profile: `2`)
   - Drops old queued work when backlog grows, keeping visible output current.
 - `MIN_EMIT_WORDS` (default: `3` in real-time mode)
   - Minimum words required before forced rendering of an unfinished fragment.
   - Helps avoid one-word lines like `You`, `Open`, `Model`.
-- `MAX_PENDING_RENDER_AGE_SECONDS` (default: `1.4`, sample profile: `1.6`)
+- `MAX_PENDING_RENDER_AGE_SECONDS` (default: `1.4`, sample profile: `1.2`)
   - Hard cap on how long a pending fragment can wait before being rendered.
   - Increase slightly if you prefer smoother, longer subtitle lines.
+- `MAX_SEGMENT_STALENESS_SECONDS` (default: `3.0` in realtime mode, `8.0` in literal mode)
+  - Drops segments that are already too old before render to avoid delayed subtitle bursts.
+  - Lower values prioritize sync-to-now; higher values prioritize completeness.
 - `TRANSLATION_CONTEXT_ENABLED` (default sample: `1`)
   - Enables short text context across translation calls.
 - `TRANSLATION_CONTEXT_TURNS` (default sample: `2`)
@@ -133,6 +152,14 @@ The listener attempts automatic matching (`CABLE Output`, `VB-Audio`, `BlackHole
 
 ```bash
 python main.py
+```
+
+### UI Preview (sin audio/API)
+
+Para probar solo el diseño de la interfaz con subtítulos simulados:
+
+```bash
+python main.py --preview-ui
 ```
 
 ## Notes
