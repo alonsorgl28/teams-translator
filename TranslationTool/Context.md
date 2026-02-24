@@ -14,7 +14,7 @@ Construir un MVP local de escritorio que traduzca reuniones de Microsoft Teams e
 - Guardado de texto traducido solo si `Save Session` está habilitado.
 
 ## 3) Estado actual (actualizado)
-Fecha de actualización: 2026-02-23
+Fecha de actualización: 2026-02-24
 
 Implementado:
 - `/Users/hola/Documents/New project/audio_listener.py`
@@ -24,17 +24,18 @@ Implementado:
   - Falla explícita si no encuentra dispositivo virtual válido (evita fallback a micrófono).
   - Buffer de audio protegido con lock y límite en memoria (`AUDIO_MAX_BUFFER_SECONDS`).
 - `/Users/hola/Documents/New project/transcription_service.py`
-  - Integración STT asíncrona con `whisper-1`.
+  - Integración STT asíncrona con modelo primario configurable (`TRANSCRIPTION_MODEL`) y fallback (`TRANSCRIPTION_FALLBACK_MODEL`).
   - Detección automática de idioma con hint opcional (`TRANSCRIPTION_LANGUAGE_HINT`).
   - Reintentos básicos.
   - Contexto de prompt configurable/desactivable para evitar deriva.
 - `/Users/hola/Documents/New project/translation_service.py`
-  - Traducción a español con tono formal técnico.
+  - Traducción multilenguaje hacia target configurable (`TARGET_LANGUAGE`), con foco en español técnico por defecto.
   - Preservación de términos críticos y números/unidades.
   - Validación de preservación de números/unidades con segunda pasada correctiva.
   - Fallback de modelo configurable y contexto corto controlado.
+  - Default actual orientado a latencia: `gpt-4o-mini` (fallback `gpt-4.1-mini`).
 - `/Users/hola/Documents/New project/overlay_ui.py`
-  - Overlay oscuro con modo `list` y modo `cinema`.
+  - Overlay oscuro con modo `list` y modo `cinema`, con diseño más minimalista/premium.
   - Buffer completo acotado con `FULL_TRANSCRIPT_MAX_SEGMENTS`.
   - Ventana draggable y always-on-top.
   - Botones requeridos + panel de subtítulos en vivo.
@@ -47,6 +48,7 @@ Implementado:
   - Dedupe por `SequenceMatcher` manteniendo orden.
   - Tarea de toggle referenciada/cancelable.
   - Control de backlog audio/texto con descarte de cola vieja.
+  - Descarte explícito de segmentos stale antes de STT/traducción/render (`MAX_SEGMENT_STALENESS_SECONDS`).
   - Limpieza de ruido de transcripción (promos/URLs/repeticiones).
   - Emisión de fragmentos calibrada por latencia y mínimo de palabras.
 - Soporte de proyecto:
@@ -65,7 +67,7 @@ Implementado:
 
 ## 5) Riesgos y pendientes
 - Prueba E2E real en Teams + dispositivo virtual en cada OS (actualmente validación fuerte en YouTube).
-- Ajuste fino de equilibrio latencia vs precisión semántica por tipo de contenido.
+- Ajuste fino de equilibrio latencia vs precisión semántica por tipo de contenido (tuning de `MAX_SEGMENT_STALENESS_SECONDS`, `MERGE_*`, `MIN_EMIT_WORDS`).
 - Selector de dispositivo desde UI (hoy: auto + variable `SYSTEM_AUDIO_DEVICE`).
 - Estrategia de resiliencia de red/API más robusta (retries/backoff/circuit breaker).
 - Refinamiento visual de UI para lectura continua de subtítulos en sesiones largas.
@@ -98,3 +100,8 @@ Tu idea de `memory.md` es buena como bitácora rápida. Recomendación:
   - Se acotaron buffers en audio/UI y se reforzó deduplicación/limpieza de ruido.
   - Se ajustó pipeline para menor latencia percibida y mejor legibilidad en tiempo real.
   - Se ampliaron pruebas unitarias y validación de regresiones de visualización.
+- 2026-02-24:
+  - Se aplicó perfil sync-first para reducir desfase en subtítulos en vivo.
+  - Se incorporó descarte de segmentos viejos con umbral configurable (`MAX_SEGMENT_STALENESS_SECONDS`).
+  - Se ajustó default de traducción a `gpt-4o-mini` para menor latencia.
+  - Se agregó cobertura de test para asegurar que segmentos stale no llegan a la UI.

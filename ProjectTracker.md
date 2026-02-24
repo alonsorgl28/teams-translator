@@ -1,7 +1,7 @@
 # ProjectTracker - Teams Real-Time Translation Tool
 
 ## Progreso global estimado
-**92%**
+**94%**
 
 ## Fases 0% -> 100%
 
@@ -16,7 +16,7 @@
 | F6 | 60% | Traducción técnica a español con reglas de preservación | Completado |
 | F7 | 70% | Overlay UI y controles principales | Completado |
 | F8 | 80% | Integración E2E local + validaciones en entorno real | En progreso (validación YouTube completada, falta Teams real) |
-| F9 | 90% | Hardening (manejo de errores, latencia sostenida, UX fina) | En progreso (remediación 15/15 aplicada) |
+| F9 | 90% | Hardening (manejo de errores, latencia sostenida, UX fina) | En progreso (remediación 15/15 aplicada + perfil sync-first y descarte stale) |
 | F10 | 100% | Release candidate estable y documentación final | Pendiente |
 
 ## Entregables completados
@@ -40,12 +40,13 @@
 
 ## Backlog inmediato (siguiente iteración)
 1. Ejecutar validación real F8 en Teams (mínimo 4 sesiones) y consolidar evidencia.
-2. Afinar perfil de latencia/precisión con A/B de configuración por escenario (podcast vs reunión técnica).
-3. Rediseño visual final de subtítulos (modo operación vs debug) para lectura continua.
-4. Selector de dispositivo de audio en UI con detección en vivo.
-5. Estrategia de resiliencia de red/API (timeouts, retries, fallback policy).
+2. Afinar perfil de latencia/precisión con A/B de configuración por escenario (podcast vs reunión técnica), usando `MAX_SEGMENT_STALENESS_SECONDS`.
+3. Ajustar tuning final de UI premium (tipografía, espaciado, contraste) con foco en legibilidad continua.
+4. Cerrar selector de dispositivo de audio en UI con detección en vivo y validación de apply/restart.
+5. Estrategia de resiliencia de red/API (timeouts, retries, fallback policy) con métricas de recuperación.
 
 ## Registro de cambios (resumen)
 - 2026-02-14: Se completó MVP funcional base y se inició fase F8 (validación E2E real).
 - 2026-02-19: Se añadió instrumentación de métricas por segmento y resumen de sesión (JSONL + summary), nuevos controles por entorno (`METRICS_*`) y plan formal de validación real (`ValidationPlan.md`).
 - 2026-02-23: Se completó remediación de auditoría (15/15), se reforzó concurrencia/memoria/UI, se optimizó pipeline de latencia y se amplió cobertura de tests.
+- 2026-02-24: Se aplicó perfil `sync-first` para reducir desfase (backlog de skip en `2`), se añadió descarte de segmentos viejos (`MAX_SEGMENT_STALENESS_SECONDS`), se dejó `gpt-4o-mini` como default de traducción por latencia, y se agregó prueba unitaria para validar stale-drop antes de render.
