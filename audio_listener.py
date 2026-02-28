@@ -114,7 +114,8 @@ class SystemAudioListener:
                 chunks_to_publish.append((raw_chunk, datetime.now()))
 
         for raw_chunk, captured_at in chunks_to_publish:
-            self._loop.call_soon_threadsafe(self._publish_chunk, raw_chunk, captured_at)
+            if self._running:
+                self._loop.call_soon_threadsafe(self._publish_chunk, raw_chunk, captured_at)
 
     def _publish_chunk(self, raw_chunk: np.ndarray, captured_at: datetime) -> None:
         wav_bytes = self._to_wav_bytes(raw_chunk)
