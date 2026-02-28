@@ -50,6 +50,10 @@ class SystemAudioListener:
         self._max_buffer_frames = max(1, int(self._sample_rate * max_buffer_seconds))
         self._running = False
 
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
     @staticmethod
     def list_input_devices() -> list[str]:
         devices = sd.query_devices()

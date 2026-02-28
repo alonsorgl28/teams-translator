@@ -264,6 +264,13 @@ class MeetingTranslatorController:
                 self.transcriber.reset_context()
             self.metrics_reporter.start_session()
             self.listener.start()
+            await asyncio.sleep(0.8)
+            if not self.listener.is_running:
+                await self.stop()
+                self.ui.set_status(
+                    "Audio device not found or failed to start. Please check your audio settings (BlackHole/VB-Cable)."
+                )
+                return
         except Exception as exc:  # noqa: BLE001 - service startup boundary
             async with self._running_lock:
                 self.running = False
