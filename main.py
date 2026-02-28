@@ -201,6 +201,7 @@ class MeetingTranslatorController:
         self.buffer = RollingTranscriptBuffer(window_minutes=60)
         self.saved_session_text: list[str] = []
 
+        self._running_lock = asyncio.Lock()
         self.running = False
         self.transcribe_task: Optional[asyncio.Task[None]] = None
         self.translate_task: Optional[asyncio.Task[None]] = None
@@ -246,8 +247,10 @@ class MeetingTranslatorController:
         )
 
     async def start(self) -> None:
-        if self.running:
-            return
+        async with self._running_lock:
+            if self.running:
+                return
+            self.running = True
         try:
             self._ensure_services()
             self._clear_runtime_queues()
@@ -262,20 +265,22 @@ class MeetingTranslatorController:
             self.metrics_reporter.start_session()
             self.listener.start()
         except Exception as exc:  # noqa: BLE001 - service startup boundary
+            async with self._running_lock:
+                self.running = False
             self.ui.set_status(f"Startup error: {exc}")
             self.ui.set_listening(False)
             return
 
-        self.running = True
         self.transcribe_task = asyncio.create_task(self._transcription_worker_loop(), name="transcription-worker")
         self.translate_task = asyncio.create_task(self._translation_worker_loop(), name="translation-worker")
         self.ui.set_status("Listening to system audio...")
 
     async def stop(self) -> None:
-        if not self.running:
-            self.ui.set_listening(False)
-            return
-        self.running = False
+        async with self._running_lock:
+            if not self.running:
+                self.ui.set_listening(False)
+                return
+            self.running = False
         self.listener.stop()
 
         for task in (self.transcribe_task, self.translate_task):
@@ -308,7 +313,10 @@ class MeetingTranslatorController:
                 task.cancel()
 
     async def _transcription_worker_loop(self) -> None:
-        while self.running:
+        while True:
+            async with self._running_lock:
+                if not self.running:
+                    break
             try:
                 chunk = await self.audio_queue.get()
                 audio_backlog = self.audio_queue.qsize()
@@ -395,7 +403,10 @@ class MeetingTranslatorController:
                     break
 
     async def _translation_worker_loop(self) -> None:
-        while self.running:
+        while True:
+            async with self._running_lock:
+                if not self.running:
+                    break
             try:
                 (
                     chunk,
