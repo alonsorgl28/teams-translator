@@ -592,6 +592,8 @@ class MeetingTranslatorController:
         self.ui.set_status(f"Settings applied: {source_language} -> {target_language}.")
 
     def _on_audio_source_changed(self, audio_source: str) -> None:
+        if self.listener is None:
+            return
         selected = (audio_source or "").strip()
         if selected and selected.lower() != "system loopback (default)":
             self.listener._preferred_device = selected
