@@ -589,6 +589,13 @@ class MeetingTranslatorController:
     def _on_language_settings_changed(self, source_language: str, target_language: str) -> None:
         self.source_language = source_language
         self.target_language = target_language
+        if self.transcriber is not None:
+            self.transcriber.reset_context()
+        if self.translator is not None:
+            if hasattr(self.translator, "reset_context"):
+                self.translator.reset_context()
+            elif hasattr(self.translator, "clear_context"):
+                self.translator.clear_context()
         self.ui.set_status(f"Settings applied: {source_language} -> {target_language}.")
 
     def _on_audio_source_changed(self, audio_source: str) -> None:
