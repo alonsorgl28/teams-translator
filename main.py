@@ -389,7 +389,10 @@ class MeetingTranslatorController:
                             self.text_queue.get_nowait()
                         except asyncio.QueueEmpty:
                             pass
-                        self.text_queue.put_nowait(item)
+                        try:
+                            self.text_queue.put_nowait(item)
+                        except asyncio.QueueFull:
+                            logging.warning("text_queue remained full after drop; discarding latest transcription item")
             except asyncio.CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001 - runtime boundary
