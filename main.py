@@ -17,11 +17,11 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 from qasync import QEventLoop
 
-from audio_listener import AudioChunk, SystemAudioListener
+from audio_listener import AudioChunk, StreamingAudioFrame, SystemAudioListener
 from config_utils import read_bool_env, read_float_env, read_int_env
 from metrics_reporter import SessionMetricsReporter
 from overlay_ui import OverlayWindow
-from transcription_service import WhisperTranscriptionService
+from transcription_service import RealtimeTranscriptionEvent, RealtimeTranscriptionService, WhisperTranscriptionService
 from translation_service import TechnicalTranslationService
 
 
@@ -134,8 +134,54 @@ class OverlayPreviewRunner:
 
 class MeetingTranslatorController:
     RECENT_RENDERED_MAXLEN = 5
-    DUPLICATE_SEQUENCE_RATIO = 0.98
-    DUPLICATE_MAX_WORD_DELTA = 1
+    DUPLICATE_SEQUENCE_RATIO = 0.995
+    DUPLICATE_MAX_WORD_DELTA = 0
+    MIN_WORDS_ON_AGE_FLUSH = 2
+    STALE_EMIT_RELAX_FACTOR = 2.0
+    FIRST_EMIT_MIN_CHARS = 4
+    MIN_STALENESS_SECONDS_LIVE = 6.0
+    MIN_CHUNK_STEP_SECONDS_LIVE = 0.85
+    MAX_CHUNK_SECONDS_LIVE = 1.0
+    STARTUP_LISTENER_VALIDATION_SECONDS = 0.8
+    PROVISIONAL_PREVIEW_MIN_WORDS = 2
+    SOURCE_TRANSLATION_MIN_WORDS = 4
+    SOURCE_TRANSLATION_MIN_CHARS = 18
+    SOURCE_TRANSLATION_MAX_AGE_SECONDS = 0.95
+    SOURCE_TRANSLATION_FIRST_AGE_SECONDS = 0.3
+    SOURCE_TRANSLATION_BACKLOG_MIN_WORDS = 2
+    SOURCE_TRANSLATION_FORCE_AFTER_FRAGMENTS = 2
+    SOURCE_TRANSLATION_FORCE_FRAGMENT_MIN_WORDS = 3
+    SOURCE_INCOMPLETE_TRAILING_TOKENS = {
+        "and",
+        "or",
+        "but",
+        "the",
+        "a",
+        "an",
+        "to",
+        "of",
+        "for",
+        "with",
+        "that",
+        "than",
+        "into",
+        "from",
+        "about",
+        "como",
+        "pero",
+        "para",
+        "con",
+        "sin",
+        "que",
+        "de",
+        "del",
+        "la",
+        "el",
+        "los",
+        "las",
+        "un",
+        "una",
+    }
 
     SUPPORTED_LANG_CODES = {
         "en",
@@ -164,19 +210,30 @@ class MeetingTranslatorController:
         self.audio_queue: asyncio.Queue[AudioChunk] = asyncio.Queue(
             maxsize=read_int_env("AUDIO_QUEUE_MAXSIZE", default_audio_q)
         )
+        self.stream_audio_queue: asyncio.Queue[StreamingAudioFrame] = asyncio.Queue(
+            maxsize=read_int_env("STREAM_AUDIO_QUEUE_MAXSIZE", 96)
+        )
         self.text_queue: asyncio.Queue[
             tuple[AudioChunk, str, str, float, datetime, datetime]
         ] = asyncio.Queue(maxsize=read_int_env("TEXT_QUEUE_MAXSIZE", default_text_q))
         default_chunk_seconds = 1.8 if self.literal_complete_mode else 1.6
         chunk_seconds = read_float_env("CHUNK_SECONDS", default_chunk_seconds)
+        if not self.literal_complete_mode:
+            chunk_seconds = min(chunk_seconds, self.MAX_CHUNK_SECONDS_LIVE)
         default_chunk_step = min(1.2 if self.literal_complete_mode else 1.0, chunk_seconds)
+        configured_chunk_step = read_float_env("CHUNK_STEP_SECONDS", default_chunk_step)
+        if not self.literal_complete_mode:
+            # Overlap that is too aggressive can outpace API throughput and create stale drops.
+            configured_chunk_step = max(configured_chunk_step, min(chunk_seconds, self.MIN_CHUNK_STEP_SECONDS_LIVE))
+        self.realtime_transcription_enabled = read_bool_env("REALTIME_TRANSCRIPTION_ENABLED", False)
         self.listener = SystemAudioListener(
             loop=self.loop,
             output_queue=self.audio_queue,
             chunk_seconds=chunk_seconds,
-            chunk_step_seconds=read_float_env("CHUNK_STEP_SECONDS", default_chunk_step),
+            chunk_step_seconds=configured_chunk_step,
             preferred_device=os.getenv("SYSTEM_AUDIO_DEVICE"),
             drop_oldest_on_full=not self.literal_complete_mode,
+            stream_output_queue=self.stream_audio_queue if self.realtime_transcription_enabled else None,
         )
         default_skip = 999999 if self.literal_complete_mode else 2
         self.max_audio_backlog_before_skip = read_int_env("MAX_AUDIO_BACKLOG_BEFORE_SKIP", default_skip)
@@ -184,19 +241,28 @@ class MeetingTranslatorController:
             "MAX_TEXT_BACKLOG_BEFORE_SKIP",
             read_int_env("MAX_BACKLOG_BEFORE_SKIP", default_skip),
         )
-        self.merge_min_words = read_int_env("MERGE_MIN_WORDS", 7 if self.literal_complete_mode else 6)
+        self.merge_min_words = read_int_env("MERGE_MIN_WORDS", 7 if self.literal_complete_mode else 5)
         self.merge_max_words = read_int_env("MERGE_MAX_WORDS", 52 if self.literal_complete_mode else 24)
-        self.merge_flush_seconds = read_float_env("MERGE_FLUSH_SECONDS", 2.8 if self.literal_complete_mode else 2.0)
+        self.merge_flush_seconds = read_float_env("MERGE_FLUSH_SECONDS", 2.8 if self.literal_complete_mode else 1.2)
         self.min_emit_words = read_int_env("MIN_EMIT_WORDS", 4 if self.literal_complete_mode else 3)
         self.max_pending_render_age_seconds = read_float_env(
             "MAX_PENDING_RENDER_AGE_SECONDS",
-            2.2 if self.literal_complete_mode else 1.4,
+            2.2 if self.literal_complete_mode else 1.0,
         )
-        self.max_segment_staleness_seconds = read_float_env(
+        configured_staleness = read_float_env(
             "MAX_SEGMENT_STALENESS_SECONDS",
-            8.0 if self.literal_complete_mode else 3.0,
+            8.0 if self.literal_complete_mode else 6.0,
+        )
+        if self.literal_complete_mode:
+            self.max_segment_staleness_seconds = configured_staleness
+        else:
+            self.max_segment_staleness_seconds = max(configured_staleness, self.MIN_STALENESS_SECONDS_LIVE)
+        self.max_emit_staleness_seconds = self.max_segment_staleness_seconds * max(
+            self.STALE_EMIT_RELAX_FACTOR,
+            2.0,
         )
         self.transcriber: Optional[WhisperTranscriptionService] = None
+        self.realtime_transcriber: Optional[RealtimeTranscriptionService] = None
         self.translator: Optional[TechnicalTranslationService] = None
         self.buffer = RollingTranscriptBuffer(window_minutes=60)
         self.saved_session_text: list[str] = []
@@ -205,6 +271,7 @@ class MeetingTranslatorController:
         self.running = False
         self.transcribe_task: Optional[asyncio.Task[None]] = None
         self.translate_task: Optional[asyncio.Task[None]] = None
+        self.realtime_audio_task: Optional[asyncio.Task[None]] = None
         self._toggle_task: Optional[asyncio.Task[None]] = None
         self.debug_enabled = os.getenv("DEBUG_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
         self.filter_gibberish = read_bool_env("FILTER_GIBBERISH", True)
@@ -231,6 +298,13 @@ class MeetingTranslatorController:
         self._pending_render_text = ""
         self._pending_captured_at: Optional[datetime] = None
         self._pending_metrics_data: Optional[dict[str, Any]] = None
+        self._pending_source_text = ""
+        self._pending_source_captured_at: Optional[datetime] = None
+        self._pending_source_language = "auto"
+        self._pending_source_metrics_data: Optional[dict[str, Any]] = None
+        self._pending_source_fragment_count = 0
+        self._source_preview_active = False
+        self._using_realtime_transcription = False
 
         self.ui.toggle_listening.connect(self._on_toggle_listening)
         self.ui.copy_requested.connect(self._on_copy_requested)
@@ -258,19 +332,27 @@ class MeetingTranslatorController:
             self._recent_rendered_normalized.clear()
             self._last_source_text = ""
             self._last_emitted_text = ""
+            self._pending_render_text = ""
+            self._pending_captured_at = None
             self.translation_fallbacks = 0
             self._pending_metrics_data = None
+            self._reset_pending_source_buffer()
+            self._source_preview_active = False
+            self._using_realtime_transcription = False
             if self.transcriber is not None:
                 self.transcriber.reset_context()
+            if self.translator is not None and hasattr(self.translator, "reset_context"):
+                self.translator.reset_context()
+            if self.realtime_transcriber is not None:
+                self.realtime_transcriber.reset_context()
+                try:
+                    await self.realtime_transcriber.start()
+                    self._using_realtime_transcription = True
+                except Exception as exc:  # noqa: BLE001 - graceful batch fallback
+                    logging.warning("Realtime transcription unavailable, falling back to batch: %s", exc)
+                    self._using_realtime_transcription = False
             self.metrics_reporter.start_session()
             self.listener.start()
-            await asyncio.sleep(0.8)
-            if not self.listener.is_running:
-                await self.stop()
-                self.ui.set_status(
-                    "Audio device not found or failed to start. Please check your audio settings (BlackHole/VB-Cable)."
-                )
-                return
         except Exception as exc:  # noqa: BLE001 - service startup boundary
             async with self._running_lock:
                 self.running = False
@@ -278,9 +360,26 @@ class MeetingTranslatorController:
             self.ui.set_listening(False)
             return
 
-        self.transcribe_task = asyncio.create_task(self._transcription_worker_loop(), name="transcription-worker")
+        if self._using_realtime_transcription:
+            self.realtime_audio_task = asyncio.create_task(
+                self._realtime_audio_sender_loop(),
+                name="realtime-audio-sender",
+            )
+            self.transcribe_task = asyncio.create_task(
+                self._realtime_transcription_worker_loop(),
+                name="realtime-transcription-worker",
+            )
+        else:
+            self.transcribe_task = asyncio.create_task(self._transcription_worker_loop(), name="transcription-worker")
         self.translate_task = asyncio.create_task(self._translation_worker_loop(), name="translation-worker")
         self.ui.set_status("Listening to system audio...")
+        await asyncio.sleep(self.STARTUP_LISTENER_VALIDATION_SECONDS)
+        if not self.listener.is_running:
+            await self.stop()
+            self.ui.set_status(
+                "Audio device not found or failed to start. Please check your audio settings (BlackHole/VB-Cable)."
+            )
+            return
 
     async def stop(self) -> None:
         async with self._running_lock:
@@ -290,7 +389,7 @@ class MeetingTranslatorController:
             self.running = False
         self.listener.stop()
 
-        for task in (self.transcribe_task, self.translate_task):
+        for task in (self.transcribe_task, self.translate_task, self.realtime_audio_task):
             if task:
                 task.cancel()
                 try:
@@ -300,8 +399,15 @@ class MeetingTranslatorController:
 
         self.transcribe_task = None
         self.translate_task = None
+        self.realtime_audio_task = None
+        if self.realtime_transcriber is not None and self._using_realtime_transcription:
+            await self.realtime_transcriber.stop()
+        self._using_realtime_transcription = False
         self._flush_pending_render(language="auto")
         self._clear_runtime_queues()
+        self._reset_pending_source_buffer()
+        self._source_preview_active = False
+        self.ui.clear_live_preview()
         summary = self.metrics_reporter.finalize_session()
         if self.debug_enabled and summary:
             logging.info("metrics_session_summary %s", summary)
@@ -315,9 +421,12 @@ class MeetingTranslatorController:
         self._clear_runtime_queues()
         if self._toggle_task and not self._toggle_task.done():
             self._toggle_task.cancel()
-        for task in (self.transcribe_task, self.translate_task):
+        for task in (self.transcribe_task, self.translate_task, self.realtime_audio_task):
             if task and not task.done():
                 task.cancel()
+        if self.realtime_transcriber is not None and self._using_realtime_transcription and self.loop.is_running():
+            self.loop.create_task(self.realtime_transcriber.stop())
+        self._using_realtime_transcription = False
 
     async def _transcription_worker_loop(self) -> None:
         while True:
@@ -343,7 +452,10 @@ class MeetingTranslatorController:
 
                 transcription_start_ts = datetime.now()
                 started = perf_counter()
-                transcribed = await self.transcriber.transcribe(chunk.wav_bytes)  # type: ignore[union-attr]
+                transcribed = await self.transcriber.transcribe(  # type: ignore[union-attr]
+                    chunk.wav_bytes,
+                    preview_callback=self._handle_transcription_preview,
+                )
                 transcription_end_ts = datetime.now()
                 transcription_time = perf_counter() - started
                 if self.debug_enabled:
@@ -355,44 +467,19 @@ class MeetingTranslatorController:
                         transcription_time,
                     )
 
-                source_text = transcribed.text.strip()
-                source_text = self._clean_transcription_noise(source_text)
+                source_text = self._sanitize_transcribed_text(transcribed.text)
                 if not source_text:
                     continue
-                if self.filter_gibberish and self._looks_gibberish(source_text):
-                    if self.debug_enabled:
-                        logging.info("debug_gibberish_dropped text=%r", source_text[:120])
-                    continue
-                source_text = self._remove_source_overlap(source_text)
-                if not source_text:
-                    continue
-                source_text = self._remove_adjacent_sentence_duplicates(source_text)
-                if not source_text:
-                    continue
+                self._maybe_show_source_preview(source_text)
 
-                item = (
-                    chunk,
-                    source_text,
-                    transcribed.language or "auto",
-                    transcription_time,
-                    transcription_start_ts,
-                    transcription_end_ts,
+                await self._enqueue_translation_item(
+                    chunk=chunk,
+                    source_text=source_text,
+                    source_language=transcribed.language or "auto",
+                    transcription_time=transcription_time,
+                    transcription_start_ts=transcription_start_ts,
+                    transcription_end_ts=transcription_end_ts,
                 )
-                if self.literal_complete_mode:
-                    await self.text_queue.put(item)
-                else:
-                    try:
-                        self.text_queue.put_nowait(item)
-                    except asyncio.QueueFull:
-                        # Keep newest chunks to favor real-time behavior.
-                        try:
-                            self.text_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
-                        try:
-                            self.text_queue.put_nowait(item)
-                        except asyncio.QueueFull:
-                            logging.warning("text_queue remained full after drop; discarding latest transcription item")
             except asyncio.CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001 - runtime boundary
@@ -400,7 +487,7 @@ class MeetingTranslatorController:
                 self.metrics_reporter.record_error(
                     stage="transcription",
                     error=str(exc),
-                    audio_backlog=self.audio_queue.qsize(),
+                    audio_backlog=self._current_audio_backlog(),
                     text_backlog=self.text_queue.qsize(),
                 )
                 if self.debug_enabled:
@@ -411,6 +498,120 @@ class MeetingTranslatorController:
                     # Stop workers/listener on invalid credentials to avoid request spam.
                     self._schedule_toggle(False)
                     break
+
+    async def _realtime_audio_sender_loop(self) -> None:
+        while True:
+            async with self._running_lock:
+                if not self.running:
+                    break
+            try:
+                frame = await self.stream_audio_queue.get()
+                if not self._using_realtime_transcription or self.realtime_transcriber is None:
+                    continue
+                await self.realtime_transcriber.append_audio(
+                    samples=frame.samples,
+                    sample_rate=frame.sample_rate,
+                    captured_at=frame.captured_at,
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001 - realtime boundary
+                self.transcription_errors += 1
+                self.metrics_reporter.record_error(
+                    stage="transcription",
+                    error=str(exc),
+                    audio_backlog=self._current_audio_backlog(),
+                    text_backlog=self.text_queue.qsize(),
+                )
+                await self._fallback_to_batch_transcription(f"Realtime audio error: {exc}")
+                break
+
+    async def _realtime_transcription_worker_loop(self) -> None:
+        while True:
+            async with self._running_lock:
+                if not self.running:
+                    break
+            try:
+                if self.realtime_transcriber is None:
+                    await asyncio.sleep(0.05)
+                    continue
+                event = await self.realtime_transcriber.get_event()
+                if event.kind == "preview":
+                    preview_text = self._clean_transcription_noise(event.text)
+                    if preview_text:
+                        self._source_preview_active = True
+                        self.ui.set_live_preview(preview_text)
+                    continue
+                if event.kind == "error":
+                    self.transcription_errors += 1
+                    self.metrics_reporter.record_error(
+                        stage="transcription",
+                        error=event.error,
+                        audio_backlog=self._current_audio_backlog(),
+                        text_backlog=self.text_queue.qsize(),
+                    )
+                    await self._fallback_to_batch_transcription(f"Realtime transcription error: {event.error}")
+                    break
+                if event.kind != "final":
+                    continue
+                source_text = self._sanitize_transcribed_text(event.text)
+                if not source_text:
+                    continue
+                chunk = AudioChunk(
+                    captured_at=event.captured_at,
+                    duration_s=0.0,
+                    wav_bytes=b"",
+                )
+                transcription_start_ts = event.captured_at
+                transcription_end_ts = datetime.now()
+                await self._enqueue_translation_item(
+                    chunk=chunk,
+                    source_text=source_text,
+                    source_language=event.language or "auto",
+                    transcription_time=event.latency_s,
+                    transcription_start_ts=transcription_start_ts,
+                    transcription_end_ts=transcription_end_ts,
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001 - realtime boundary
+                self.transcription_errors += 1
+                self.metrics_reporter.record_error(
+                    stage="transcription",
+                    error=str(exc),
+                    audio_backlog=self._current_audio_backlog(),
+                    text_backlog=self.text_queue.qsize(),
+                )
+                await self._fallback_to_batch_transcription(f"Realtime transcription error: {exc}")
+                break
+
+    async def _fallback_to_batch_transcription(self, reason: str) -> None:
+        if not self._using_realtime_transcription:
+            self.ui.set_status(reason)
+            return
+
+        self._using_realtime_transcription = False
+        self._source_preview_active = False
+        self.ui.clear_live_preview()
+        self.ui.set_status(f"{reason}. Falling back to batch transcription.")
+
+        current_task = asyncio.current_task()
+        if self.realtime_audio_task is not None and self.realtime_audio_task is not current_task:
+            self.realtime_audio_task.cancel()
+            try:
+                await self.realtime_audio_task
+            except asyncio.CancelledError:
+                pass
+        self.realtime_audio_task = None
+
+        if self.realtime_transcriber is not None:
+            await self.realtime_transcriber.stop()
+
+        if self.transcribe_task is None or self.transcribe_task is current_task or self.transcribe_task.done():
+            self.transcribe_task = asyncio.create_task(
+                self._transcription_worker_loop(),
+                name="transcription-worker",
+            )
 
     async def _translation_worker_loop(self) -> None:
         while True:
@@ -427,7 +628,7 @@ class MeetingTranslatorController:
                     transcription_end_ts,
                 ) = await self.text_queue.get()
                 backlog = self.text_queue.qsize()
-                audio_backlog_snapshot = self.audio_queue.qsize()
+                audio_backlog_snapshot = self._current_audio_backlog()
                 if backlog > self.max_text_backlog_before_skip:
                     skipped = 0
                     while True:
@@ -449,8 +650,40 @@ class MeetingTranslatorController:
                 if self._drop_stale_chunk(chunk.captured_at, stage="translation"):
                     continue
 
-                translation_start_ts = datetime.now()
+                source_metrics = {
+                    "captured_at": chunk.captured_at,
+                    "source_language": source_language,
+                    "transcription_start_ts": transcription_start_ts,
+                    "transcription_end_ts": transcription_end_ts,
+                    "translation_start_ts": transcription_end_ts,
+                    "translation_end_ts": transcription_end_ts,
+                    "transcription_time_s": transcription_time,
+                    "translation_time_s": 0.0,
+                    "audio_backlog": audio_backlog_snapshot,
+                    "text_backlog": backlog,
+                    "had_fallback": False,
+                    "fallback_reason": "",
+                }
+                self._buffer_source_fragment(
+                    source_text,
+                    chunk_captured_at=chunk.captured_at,
+                    source_language=source_language,
+                    metrics_data=source_metrics,
+                )
+                if not self._should_translate_pending_source(
+                    source_text,
+                    backlog=backlog,
+                    audio_backlog=audio_backlog_snapshot,
+                ):
+                    continue
+
+                pending_source = self._consume_pending_source_buffer()
+                if pending_source is None:
+                    continue
+
+                source_text, source_language, source_metrics = pending_source
                 started = perf_counter()
+                translation_start_ts = datetime.now()
                 translated = await self.translator.translate_text(  # type: ignore[union-attr]
                     source_text,
                     target_language=self.target_language,
@@ -462,42 +695,35 @@ class MeetingTranslatorController:
                         logging.warning("debug_translation_fallback reason=%s", fallback_reason)
                 translation_end_ts = datetime.now()
                 translation_time = perf_counter() - started
+                source_metrics = dict(source_metrics)
+                source_metrics["translation_start_ts"] = translation_start_ts
+                source_metrics["translation_end_ts"] = translation_end_ts
+                source_metrics["translation_time_s"] = translation_time
+                source_metrics["had_fallback"] = bool(fallback_reason)
+                source_metrics["fallback_reason"] = fallback_reason
                 if self.debug_enabled:
                     logging.info(
                         "debug_translation captured_at=%s transcription_start=%s transcription_end=%s "
                         "translation_start=%s translation_end=%s transcription_s=%.3f translation_s=%.3f",
-                        chunk.captured_at.isoformat(timespec="milliseconds"),
-                        transcription_start_ts.isoformat(timespec="milliseconds"),
-                        transcription_end_ts.isoformat(timespec="milliseconds"),
+                        source_metrics["captured_at"].isoformat(timespec="milliseconds"),
+                        source_metrics["transcription_start_ts"].isoformat(timespec="milliseconds"),
+                        source_metrics["transcription_end_ts"].isoformat(timespec="milliseconds"),
                         translation_start_ts.isoformat(timespec="milliseconds"),
                         translation_end_ts.isoformat(timespec="milliseconds"),
-                        transcription_time,
+                        float(source_metrics["transcription_time_s"]),
                         translation_time,
                     )
 
                 emitted = self._buffer_or_emit_translation(
                     translated=translated,
-                    chunk_captured_at=chunk.captured_at,
+                    chunk_captured_at=source_metrics["captured_at"],
                     source_language=source_language,
-                    api_time=transcription_time + translation_time,
-                    metrics_data={
-                        "captured_at": chunk.captured_at,
-                        "source_language": source_language,
-                        "transcription_start_ts": transcription_start_ts,
-                        "transcription_end_ts": transcription_end_ts,
-                        "translation_start_ts": translation_start_ts,
-                        "translation_end_ts": translation_end_ts,
-                        "transcription_time_s": transcription_time,
-                        "translation_time_s": translation_time,
-                        "audio_backlog": audio_backlog_snapshot,
-                        "text_backlog": backlog,
-                        "had_fallback": bool(fallback_reason),
-                        "fallback_reason": fallback_reason,
-                    },
+                    api_time=float(source_metrics["transcription_time_s"]) + translation_time,
+                    metrics_data=source_metrics,
                 )
                 # If fragment was buffered but not emitted yet, keep status responsive.
                 if not emitted:
-                    self.last_api_time = transcription_time + translation_time
+                    self.last_api_time = float(source_metrics["transcription_time_s"]) + translation_time
                     if self.debug_enabled:
                         self._update_debug_panel(language=source_language, api_time=self.last_api_time)
             except asyncio.CancelledError:
@@ -507,7 +733,7 @@ class MeetingTranslatorController:
                 self.metrics_reporter.record_error(
                     stage="translation",
                     error=str(exc),
-                    audio_backlog=self.audio_queue.qsize(),
+                    audio_backlog=self._current_audio_backlog(),
                     text_backlog=self.text_queue.qsize(),
                 )
                 if self.debug_enabled:
@@ -517,6 +743,8 @@ class MeetingTranslatorController:
     def _ensure_services(self) -> None:
         if self.transcriber is None:
             self.transcriber = WhisperTranscriptionService()
+        if self.realtime_transcription_enabled and self.realtime_transcriber is None:
+            self.realtime_transcriber = RealtimeTranscriptionService()
         if self.translator is None:
             self.translator = TechnicalTranslationService()
 
@@ -531,6 +759,72 @@ class MeetingTranslatorController:
                 self.text_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+        while not self.stream_audio_queue.empty():
+            try:
+                self.stream_audio_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+    def _current_audio_backlog(self) -> int:
+        if self._using_realtime_transcription:
+            return self.stream_audio_queue.qsize()
+        return self.audio_queue.qsize()
+
+    async def _enqueue_translation_item(
+        self,
+        *,
+        chunk: AudioChunk,
+        source_text: str,
+        source_language: str,
+        transcription_time: float,
+        transcription_start_ts: datetime,
+        transcription_end_ts: datetime,
+    ) -> None:
+        item = (
+            chunk,
+            source_text,
+            source_language,
+            transcription_time,
+            transcription_start_ts,
+            transcription_end_ts,
+        )
+        if self.literal_complete_mode:
+            await self.text_queue.put(item)
+            return
+        try:
+            self.text_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            try:
+                self.text_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.text_queue.put_nowait(item)
+            except asyncio.QueueFull:
+                logging.warning("text_queue remained full after drop; discarding latest transcription item")
+
+    def _sanitize_transcribed_text(self, source_text: str) -> str:
+        cleaned = self._clean_transcription_noise((source_text or "").strip())
+        if not cleaned:
+            return ""
+        if self.filter_gibberish and self._looks_gibberish(cleaned):
+            if self.debug_enabled:
+                logging.info("debug_gibberish_dropped text=%r", cleaned[:120])
+            return ""
+        cleaned = self._remove_source_overlap(cleaned)
+        if not cleaned:
+            return ""
+        cleaned = self._remove_adjacent_sentence_duplicates(cleaned)
+        return cleaned
+
+    async def _handle_transcription_preview(self, preview_text: str) -> None:
+        if self.literal_complete_mode:
+            return
+        cleaned = self._clean_transcription_noise(preview_text)
+        if not cleaned:
+            return
+        self._source_preview_active = True
+        self.ui.set_live_preview(cleaned)
 
     def _on_toggle_listening(self, should_listen: bool) -> None:
         self._schedule_toggle(should_listen)
@@ -570,6 +864,9 @@ class MeetingTranslatorController:
     def _on_clear_requested(self) -> None:
         self._last_rendered_normalized = ""
         self._last_emitted_text = ""
+        self._reset_pending_source_buffer()
+        self._source_preview_active = False
+        self.ui.clear_live_preview()
         self.ui.clear_segments()
         self.ui.set_status("Visible overlay text cleared. Buffer kept in memory.")
 
@@ -591,6 +888,8 @@ class MeetingTranslatorController:
         self.target_language = target_language
         if self.transcriber is not None:
             self.transcriber.reset_context()
+        if self.realtime_transcriber is not None:
+            self.realtime_transcriber.reset_context()
         if self.translator is not None:
             if hasattr(self.translator, "reset_context"):
                 self.translator.reset_context()
@@ -636,7 +935,11 @@ class MeetingTranslatorController:
 
     def _drop_stale_chunk(self, captured_at: datetime, stage: str) -> bool:
         age_s = (datetime.now() - captured_at).total_seconds()
-        if age_s <= self.max_segment_staleness_seconds:
+        threshold_s = self.max_segment_staleness_seconds
+        if stage == "emit":
+            # Rendering can be safely more tolerant than worker stages.
+            threshold_s = self.max_emit_staleness_seconds
+        if age_s <= threshold_s:
             return False
         self.skipped_stale_segments += 1
         if self.debug_enabled:
@@ -644,7 +947,7 @@ class MeetingTranslatorController:
                 "debug_drop_stale stage=%s age_s=%.3f threshold_s=%.3f captured_at=%s",
                 stage,
                 age_s,
-                self.max_segment_staleness_seconds,
+                threshold_s,
                 captured_at.isoformat(timespec="milliseconds"),
             )
         return True
@@ -727,7 +1030,7 @@ class MeetingTranslatorController:
                 overlap_n = n
                 break
 
-        if overlap_n:
+        if overlap_n and (len(curr_words) - overlap_n) >= 2:
             curr_words = curr_words[overlap_n:]
         deduped = " ".join(curr_words).strip()
         self._last_source_text = cleaned
@@ -784,10 +1087,8 @@ class MeetingTranslatorController:
         )
         for pattern in noise_patterns:
             cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
-        if re.search(r"\b(?:suscr[ií]bete|subscribe)\b", cleaned, flags=re.IGNORECASE):
-            return ""
-        if re.search(r"\b[\w.-]+\.(?:com|org|net)\b", cleaned, flags=re.IGNORECASE):
-            return ""
+        cleaned = re.sub(r"\b(?:suscr[ií]bete|subscribe)\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b[\w.-]+\.(?:com|org|net)\b", "", cleaned, flags=re.IGNORECASE)
         cleaned = MeetingTranslatorController._limit_repeated_tokens(cleaned, max_repeats=3)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.-")
         return cleaned
@@ -859,6 +1160,7 @@ class MeetingTranslatorController:
         cleaned = self._remove_adjacent_sentence_duplicates(cleaned)
         if not cleaned:
             return
+        self._source_preview_active = False
 
         timestamp = datetime.now()
         rendered = f"[{self._format_timestamp(timestamp)}] {cleaned}"
@@ -907,6 +1209,100 @@ class MeetingTranslatorController:
         self._pending_captured_at = None
         self._pending_metrics_data = None
         self._emit_segment(pending, captured_at, language, self.last_api_time, pending_metrics)
+
+    def _maybe_show_source_preview(self, source_text: str) -> None:
+        if self.literal_complete_mode:
+            return
+        preview_text = self._normalize_fragment(source_text)
+        if len(re.findall(r"\b\w+\b", preview_text)) < self.PROVISIONAL_PREVIEW_MIN_WORDS:
+            return
+        self._source_preview_active = True
+        self.ui.set_live_preview(preview_text)
+
+    def _buffer_source_fragment(
+        self,
+        source_text: str,
+        *,
+        chunk_captured_at: datetime,
+        source_language: str,
+        metrics_data: dict[str, Any],
+    ) -> None:
+        fragment = self._normalize_fragment(source_text)
+        if not fragment:
+            return
+        if not self._pending_source_text:
+            self._pending_source_text = fragment
+            self._pending_source_captured_at = chunk_captured_at
+            self._pending_source_language = source_language or "auto"
+            self._pending_source_metrics_data = dict(metrics_data)
+            self._pending_source_fragment_count = 1
+        else:
+            self._pending_source_text = self._merge_fragments(self._pending_source_text, fragment)
+            self._pending_source_language = source_language or self._pending_source_language or "auto"
+            self._pending_source_metrics_data = self._merge_metrics_data(self._pending_source_metrics_data, metrics_data)
+            self._pending_source_fragment_count += 1
+        self._maybe_show_source_preview(self._pending_source_text)
+
+    def _consume_pending_source_buffer(self) -> Optional[tuple[str, str, dict[str, Any]]]:
+        pending = self._pending_source_text.strip()
+        if not pending:
+            return None
+        language = self._pending_source_language or "auto"
+        metrics_data = dict(self._pending_source_metrics_data or {})
+        self._reset_pending_source_buffer()
+        return pending, language, metrics_data
+
+    def _reset_pending_source_buffer(self) -> None:
+        self._pending_source_text = ""
+        self._pending_source_captured_at = None
+        self._pending_source_language = "auto"
+        self._pending_source_metrics_data = None
+        self._pending_source_fragment_count = 0
+
+    def _should_translate_pending_source(self, latest_fragment: str, *, backlog: int, audio_backlog: int) -> bool:
+        pending = self._pending_source_text.strip()
+        if not pending:
+            return False
+        word_count = len(re.findall(r"\b\w+\b", pending))
+        if word_count == 0:
+            return False
+        incomplete_tail = self._ends_with_incomplete_connector(pending) or re.search(r"[,:;/\\-]\s*$", latest_fragment)
+        age_s = None
+        if self._pending_source_captured_at is not None:
+            age_s = (datetime.now() - self._pending_source_captured_at).total_seconds()
+        if self.chunks_processed == 0 and age_s is not None and not incomplete_tail:
+            if word_count >= self.MIN_WORDS_ON_AGE_FLUSH and age_s >= self.SOURCE_TRANSLATION_FIRST_AGE_SECONDS:
+                return True
+        if re.search(r"[.!?]\s*$", pending) is not None and word_count >= self.min_emit_words:
+            return True
+        if (
+            self._pending_source_fragment_count >= self.SOURCE_TRANSLATION_FORCE_AFTER_FRAGMENTS
+            and not incomplete_tail
+            and (
+                word_count >= self.SOURCE_TRANSLATION_FORCE_FRAGMENT_MIN_WORDS
+                or len(pending) >= self.SOURCE_TRANSLATION_MIN_CHARS
+            )
+        ):
+            return True
+        if backlog > 0 or audio_backlog > 0:
+            return word_count >= self.SOURCE_TRANSLATION_BACKLOG_MIN_WORDS or len(pending) >= self.SOURCE_TRANSLATION_MIN_CHARS
+        if age_s is not None:
+            age_threshold = (
+                self.SOURCE_TRANSLATION_FIRST_AGE_SECONDS if self.chunks_processed == 0 else self.SOURCE_TRANSLATION_MAX_AGE_SECONDS
+            )
+            if age_s >= age_threshold:
+                return word_count >= self.MIN_WORDS_ON_AGE_FLUSH or len(pending) >= self.SOURCE_TRANSLATION_MIN_CHARS
+        if incomplete_tail:
+            return False
+        if word_count >= max(self.merge_min_words + 1, self.SOURCE_TRANSLATION_MIN_WORDS):
+            return True
+        return len(pending) >= max(self.SOURCE_TRANSLATION_MIN_CHARS, 24)
+
+    def _ends_with_incomplete_connector(self, text: str) -> bool:
+        last_word_match = re.search(r"(\w+)\W*$", text.lower())
+        if not last_word_match:
+            return False
+        return last_word_match.group(1) in self.SOURCE_INCOMPLETE_TRAILING_TOKENS
 
     @staticmethod
     def _normalize_fragment(text: str) -> str:
@@ -1020,7 +1416,7 @@ class MeetingTranslatorController:
         data.setdefault("translation_end_ts", datetime.now())
         data.setdefault("transcription_time_s", 0.0)
         data.setdefault("translation_time_s", 0.0)
-        data.setdefault("audio_backlog", self.audio_queue.qsize())
+        data.setdefault("audio_backlog", self._current_audio_backlog())
         data.setdefault("text_backlog", self.text_queue.qsize())
         data.setdefault("had_fallback", False)
         data.setdefault("fallback_reason", "")
@@ -1066,12 +1462,12 @@ class MeetingTranslatorController:
             if left == right:
                 overlap_n = n
                 break
-        if overlap_n:
+        if overlap_n and (len(curr_words) - overlap_n) >= 2:
             curr_words = curr_words[overlap_n:]
 
         trimmed = " ".join(curr_words).strip()
         if not trimmed:
-            return ""
+            return cleaned if len(cleaned.split()) >= 2 else ""
         self._last_emitted_text = trimmed
         return trimmed
 
@@ -1082,13 +1478,18 @@ class MeetingTranslatorController:
         word_count = len(re.findall(r"\b\w+\b", pending))
         sentence_end = re.search(r"[.!?]\s*$", pending) is not None
         target_words = max(self.merge_min_words, self.min_emit_words)
+        if self._source_preview_active and word_count >= self.MIN_WORDS_ON_AGE_FLUSH:
+            return True
         if self._pending_captured_at:
             age_s = (datetime.now() - self._pending_captured_at).total_seconds()
             # Hard upper bound for on-screen delay while listening.
             if age_s >= self.max_pending_render_age_seconds:
-                if sentence_end:
-                    return word_count >= 1
-                return word_count >= self.min_emit_words
+                if word_count >= self.MIN_WORDS_ON_AGE_FLUSH:
+                    return True
+                # Keep startup from staying blank for long periods.
+                if self.chunks_processed == 0 and len(pending) >= self.FIRST_EMIT_MIN_CHARS:
+                    return True
+                return False
         if self.literal_complete_mode:
             # Strict mode: avoid cutting lines; emit mostly on sentence endings.
             if sentence_end:
@@ -1101,7 +1502,7 @@ class MeetingTranslatorController:
             return False
         if self._pending_captured_at:
             age_s = (datetime.now() - self._pending_captured_at).total_seconds()
-            if age_s >= self.merge_flush_seconds and word_count >= target_words:
+            if age_s >= self.merge_flush_seconds and word_count >= self.MIN_WORDS_ON_AGE_FLUSH:
                 return True
         if word_count >= self.merge_max_words:
             return True

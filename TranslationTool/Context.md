@@ -33,7 +33,7 @@ Implementado:
   - Preservación de términos críticos y números/unidades.
   - Validación de preservación de números/unidades con segunda pasada correctiva.
   - Fallback de modelo configurable y contexto corto controlado.
-  - Default actual orientado a latencia: `gpt-4o-mini` (fallback `gpt-4.1-mini`).
+  - Default actual orientado a latencia: `gpt-4o-mini` (fallback `gpt-4o-mini`).
 - `/Users/hola/Documents/New project/overlay_ui.py`
   - Overlay oscuro con modo `list` y modo `cinema`, con diseño más minimalista/premium.
   - Buffer completo acotado con `FULL_TRANSCRIPT_MAX_SEGMENTS`.

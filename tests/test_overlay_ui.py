@@ -60,6 +60,38 @@ class OverlayBufferTests(unittest.TestCase):
             else:
                 os.environ["SUBTITLE_MODE"] = original_mode
 
+    def test_subtitle_font_is_clamped_for_readability(self) -> None:
+        original = os.environ.get("SUBTITLE_FONT_SIZE")
+        os.environ["SUBTITLE_FONT_SIZE"] = "72"
+        try:
+            window = OverlayWindow()
+            self.assertLessEqual(window.subtitle_curr_label.font().pointSize(), 32)
+            self.assertGreaterEqual(window.subtitle_curr_label.font().pointSize(), 22)
+            window.close()
+        finally:
+            if original is None:
+                os.environ.pop("SUBTITLE_FONT_SIZE", None)
+            else:
+                os.environ["SUBTITLE_FONT_SIZE"] = original
+
+    def test_live_preview_renders_without_appending_history(self) -> None:
+        original_mode = os.environ.get("SUBTITLE_MODE")
+        os.environ["SUBTITLE_MODE"] = "cinema"
+        try:
+            window = OverlayWindow()
+            window.set_listening(True)
+            window.set_live_preview("preview text")
+            self.assertEqual(window.subtitle_curr_label.text(), "preview text")
+            self.assertEqual(window.get_full_transcript_text(), "")
+            window.clear_live_preview()
+            self.assertEqual(window.subtitle_curr_label.text(), "")
+            window.close()
+        finally:
+            if original_mode is None:
+                os.environ.pop("SUBTITLE_MODE", None)
+            else:
+                os.environ["SUBTITLE_MODE"] = original_mode
+
 
 if __name__ == "__main__":
     unittest.main()

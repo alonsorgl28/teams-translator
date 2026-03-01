@@ -12,6 +12,37 @@ from config_utils import read_bool_env, read_int_env
 
 class TechnicalTranslationService:
     SPANISH_MARKER_MIN_HITS: Final[int] = 4
+    _INCOMPLETE_TRAILING_TOKENS: Final[set[str]] = {
+        "and",
+        "or",
+        "but",
+        "the",
+        "a",
+        "an",
+        "to",
+        "of",
+        "for",
+        "with",
+        "that",
+        "than",
+        "into",
+        "from",
+        "about",
+        "como",
+        "pero",
+        "para",
+        "con",
+        "sin",
+        "que",
+        "de",
+        "del",
+        "la",
+        "el",
+        "los",
+        "las",
+        "un",
+        "una",
+    }
     _SUPPORTED_LANGS: Final[tuple[str, ...]] = (
         "English",
         "Portuguese (Brazil)",
@@ -60,7 +91,7 @@ class TechnicalTranslationService:
             raise RuntimeError("OPENAI_API_KEY is required for translation.")
         self._client = AsyncOpenAI(api_key=key)
         primary_model = os.getenv("TRANSLATION_MODEL", model).strip() or model
-        fallback_model = os.getenv("TRANSLATION_FALLBACK_MODEL", "gpt-4.1-mini").strip()
+        fallback_model = os.getenv("TRANSLATION_FALLBACK_MODEL", "gpt-4o-mini").strip()
         self._models = [primary_model]
         if fallback_model and fallback_model not in self._models:
             self._models.append(fallback_model)
@@ -89,18 +120,29 @@ class TechnicalTranslationService:
             return cleaned
 
         number_tokens = self._extract_numeric_tokens(cleaned)
-        recent_source_context = self._context_block(self._recent_source)
-        recent_translation_context = self._context_block(self._recent_translations)
+        use_context = self._should_use_context(cleaned)
+        recent_source_context = self._context_block(self._recent_source) if use_context else ""
+        recent_translation_context = self._context_block(self._recent_translations) if use_context else ""
         session_terms = self._session_glossary_text()
+        prefer_literal = self._should_force_literal_translation(cleaned)
         try:
-            translated = await self._translate_once(
-                cleaned,
-                number_tokens,
-                target_language=normalized_target,
-                recent_source_context=recent_source_context,
-                recent_translation_context=recent_translation_context,
-                session_terms=session_terms,
-            )
+            if prefer_literal:
+                translated = await self._translate_literal(
+                    cleaned,
+                    number_tokens,
+                    target_language=normalized_target,
+                    recent_source_context="",
+                    session_terms="",
+                )
+            else:
+                translated = await self._translate_once(
+                    cleaned,
+                    number_tokens,
+                    target_language=normalized_target,
+                    recent_source_context=recent_source_context,
+                    recent_translation_context=recent_translation_context,
+                    session_terms=session_terms,
+                )
             if self._is_refusal_like(translated):
                 retry = await self._translate_literal(
                     cleaned,
@@ -175,8 +217,10 @@ class TechnicalTranslationService:
             "4) This is transformation only. Never refuse, apologize, explain, or add safety disclaimers.\n"
             "5) Translate common words and pronouns (for example: you, we, they, model); preserve only true names/brands.\n"
             "6) Use context only to disambiguate terms. Do not invent facts, words, or sentences not in source.\n"
-            "7) Prefer subtitle-like natural phrasing, but keep meaning and technical terms exact.\n"
-            "8) Return only the translated text."
+            "7) Translate short fragments literally even if they start mid-sentence.\n"
+            "8) Translate pronouns, fillers, and discourse markers unless they are part of a brand/title.\n"
+            "9) Prefer direct translation over stylistic paraphrase. Never complete an unfinished thought.\n"
+            "10) Return only the translated text."
         )
         prompt_lines = [
             f"Supported language set: {', '.join(self._SUPPORTED_LANGS)}",
@@ -359,6 +403,10 @@ class TechnicalTranslationService:
         return list(candidates)
 
     def _remember_turn(self, source_text: str, translated_text: str) -> None:
+        normalized_source = self._sanitize(source_text)
+        source_word_count = len(re.findall(r"\b\w+\b", normalized_source))
+        if source_word_count < 4 or self._looks_incomplete_fragment(normalized_source):
+            return
         if self._context_enabled:
             self._recent_source.append(source_text)
             self._recent_translations.append(translated_text)
@@ -395,3 +443,37 @@ class TechnicalTranslationService:
             return ""
         merged = "\n".join(items)
         return merged[-self._context_max_chars :]
+
+    @staticmethod
+    def _should_use_context(text: str) -> bool:
+        if TechnicalTranslationService._looks_incomplete_fragment(text):
+            return False
+        word_count = len(re.findall(r"\b\w+\b", text))
+        if word_count < 10 or len(text.strip()) < 56:
+            return False
+        return re.search(r"[.!?]\s*$", text.strip()) is not None or word_count >= 14
+
+    @staticmethod
+    def _should_force_literal_translation(text: str) -> bool:
+        word_count = len(re.findall(r"\b\w+\b", text))
+        if word_count <= 6:
+            return True
+        return TechnicalTranslationService._looks_incomplete_fragment(text)
+
+    @staticmethod
+    def _looks_incomplete_fragment(text: str) -> bool:
+        cleaned = TechnicalTranslationService._sanitize(text)
+        if not cleaned:
+            return False
+        if re.search(r"[,:;/\\-]\s*$", cleaned):
+            return True
+        last_word_match = re.search(r"(\w+)\W*$", cleaned.lower())
+        if not last_word_match:
+            return False
+        return last_word_match.group(1) in TechnicalTranslationService._INCOMPLETE_TRAILING_TOKENS
+
+    def reset_context(self) -> None:
+        self._recent_source.clear()
+        self._recent_translations.clear()
+        self._session_terms.clear()
+        self.last_error = None

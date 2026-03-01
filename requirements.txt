@@ -4,3 +4,4 @@ PyQt6>=6.6.0
 python-dotenv>=1.0.0
 qasync>=0.27.1
 sounddevice>=0.4.6
+websockets>=15.0.1

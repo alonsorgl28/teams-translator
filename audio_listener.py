@@ -22,20 +22,29 @@ class AudioChunk:
     wav_bytes: bytes
 
 
+@dataclass
+class StreamingAudioFrame:
+    captured_at: datetime
+    sample_rate: int
+    samples: np.ndarray
+
+
 class SystemAudioListener:
     def __init__(
         self,
         loop: asyncio.AbstractEventLoop,
-        output_queue: asyncio.Queue[AudioChunk],
+        output_queue: Optional[asyncio.Queue[AudioChunk]],
         chunk_seconds: float = 3.0,
         chunk_step_seconds: Optional[float] = None,
         sample_rate: int = 16000,
         channels: int = 1,
         preferred_device: Optional[str] = None,
         drop_oldest_on_full: bool = True,
+        stream_output_queue: Optional[asyncio.Queue[StreamingAudioFrame]] = None,
     ) -> None:
         self._loop = loop
         self._output_queue = output_queue
+        self._stream_output_queue = stream_output_queue
         self._chunk_seconds = chunk_seconds
         self._chunk_step_seconds = min(chunk_step_seconds or chunk_seconds, chunk_seconds)
         self._sample_rate = sample_rate
@@ -102,22 +111,30 @@ class SystemAudioListener:
         samples_per_chunk = max(1, int(self._sample_rate * self._chunk_seconds))
         samples_per_step = max(1, int(self._sample_rate * self._chunk_step_seconds))
         chunks_to_publish: list[tuple[np.ndarray, datetime]] = []
+        stream_frame = (mono.copy(), datetime.now())
         with self._buffer_lock:
             if not self._running:
                 return
-            self._buffer = np.concatenate((self._buffer, mono))
-            if self._buffer.shape[0] > self._max_buffer_frames:
-                self._buffer = self._buffer[-self._max_buffer_frames :]
-            while self._buffer.shape[0] >= samples_per_chunk:
-                raw_chunk = self._buffer[:samples_per_chunk].copy()
-                self._buffer = self._buffer[samples_per_step:]
-                chunks_to_publish.append((raw_chunk, datetime.now()))
+            if self._output_queue is not None:
+                self._buffer = np.concatenate((self._buffer, mono))
+                if self._buffer.shape[0] > self._max_buffer_frames:
+                    self._buffer = self._buffer[-self._max_buffer_frames :]
+                while self._buffer.shape[0] >= samples_per_chunk:
+                    raw_chunk = self._buffer[:samples_per_chunk].copy()
+                    self._buffer = self._buffer[samples_per_step:]
+                    chunks_to_publish.append((raw_chunk, datetime.now()))
+
+        if self._stream_output_queue is not None and self._running:
+            raw_stream, captured_at = stream_frame
+            self._loop.call_soon_threadsafe(self._publish_stream_frame, raw_stream, captured_at)
 
         for raw_chunk, captured_at in chunks_to_publish:
             if self._running:
                 self._loop.call_soon_threadsafe(self._publish_chunk, raw_chunk, captured_at)
 
     def _publish_chunk(self, raw_chunk: np.ndarray, captured_at: datetime) -> None:
+        if self._output_queue is None:
+            return
         wav_bytes = self._to_wav_bytes(raw_chunk)
         chunk = AudioChunk(
             captured_at=captured_at,
@@ -137,6 +154,23 @@ class SystemAudioListener:
             else:
                 # Lossless mode: enqueue asynchronously instead of dropping audio.
                 self._loop.create_task(self._output_queue.put(chunk))
+
+    def _publish_stream_frame(self, raw_chunk: np.ndarray, captured_at: datetime) -> None:
+        if self._stream_output_queue is None:
+            return
+        frame = StreamingAudioFrame(
+            captured_at=captured_at,
+            sample_rate=self._sample_rate,
+            samples=raw_chunk,
+        )
+        try:
+            self._stream_output_queue.put_nowait(frame)
+        except asyncio.QueueFull:
+            try:
+                self._stream_output_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            self._stream_output_queue.put_nowait(frame)
 
     def _resolve_input_device(self) -> Optional[str]:
         if self._preferred_device:
