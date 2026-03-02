@@ -12,6 +12,19 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
 
+# macOS: set Qt plugin path before any PyQt6 import so the cocoa plugin is found
+# regardless of the terminal context or shell environment.
+if sys.platform == "darwin" and "QT_QPA_PLATFORM_PLUGIN_PATH" not in os.environ:
+    try:
+        import importlib.util as _ilu
+        _spec = _ilu.find_spec("PyQt6")
+        if _spec and _spec.origin:
+            _plugins = Path(_spec.origin).parent / "Qt6" / "plugins" / "platforms"
+            if _plugins.is_dir():
+                os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(_plugins)
+    except Exception:
+        pass
+
 from dotenv import load_dotenv
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
@@ -327,6 +340,8 @@ class MeetingTranslatorController:
             self.running = True
         try:
             self._ensure_services()
+            if self.transcriber is not None:
+                await self.transcriber.validate_api_key()
             self._clear_runtime_queues()
             self._last_rendered_normalized = ""
             self._recent_rendered_normalized.clear()
@@ -356,7 +371,26 @@ class MeetingTranslatorController:
         except Exception as exc:  # noqa: BLE001 - service startup boundary
             async with self._running_lock:
                 self.running = False
-            self.ui.set_status(f"Startup error: {exc}")
+            error_msg = str(exc)
+            _audio_keywords = ("blackhole", "vb-cable", "virtual", "loopback", "audio device", "system_audio_device")
+            if any(kw in error_msg.lower() for kw in _audio_keywords):
+                self.ui.show_error_dialog(
+                    "Audio Device Not Found",
+                    "No virtual audio input device was detected.\n\n"
+                    "macOS: Install BlackHole 2ch and route system audio through it.\n"
+                    "Windows: Install VB-Cable and set 'CABLE Input' as system audio output.\n\n"
+                    f"Details: {error_msg}",
+                )
+                self.ui.set_status("No audio device found. See setup instructions.")
+            elif "api key" in error_msg.lower() or "openai_api_key" in error_msg.lower():
+                self.ui.show_error_dialog(
+                    "API Key Error",
+                    f"OpenAI API key issue detected at startup:\n\n{error_msg}\n\n"
+                    "Check that OPENAI_API_KEY is set correctly in your .env file.",
+                )
+                self.ui.set_status("API key error. Check your .env file.")
+            else:
+                self.ui.set_status(f"Startup error: {error_msg}")
             self.ui.set_listening(False)
             return
 
@@ -376,9 +410,13 @@ class MeetingTranslatorController:
         await asyncio.sleep(self.STARTUP_LISTENER_VALIDATION_SECONDS)
         if not self.listener.is_running:
             await self.stop()
-            self.ui.set_status(
-                "Audio device not found or failed to start. Please check your audio settings (BlackHole/VB-Cable)."
+            self.ui.show_error_dialog(
+                "Audio Device Not Found",
+                "The audio listener failed to start.\n\n"
+                "macOS: Install BlackHole 2ch and route system audio through it.\n"
+                "Windows: Install VB-Cable and set 'CABLE Input' as system audio output.",
             )
+            self.ui.set_status("Audio device failed to start. Check your setup.")
             return
 
     async def stop(self) -> None:

@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizeGrip,
     QTextEdit,
@@ -373,6 +374,13 @@ class OverlayWindow(QWidget):
     def set_status(self, message: str) -> None:
         self.status_label.setText(message)
         self.status_label.setVisible(self._should_show_status_label(message))
+
+    def show_error_dialog(self, title: str, message: str) -> None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(title)
+        dialog.setText(message)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.exec()
 
     def set_live_preview(self, text: str) -> None:
         if self._subtitle_mode != "cinema" or not self._listening:

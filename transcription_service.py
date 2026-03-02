@@ -65,6 +65,13 @@ class WhisperTranscriptionService:
         self._context_max_chars = read_int_env("TRANSCRIPTION_CONTEXT_MAX_CHARS", 220)
         self._base_prompt = (os.getenv("TRANSCRIPTION_BASE_PROMPT") or "").strip()
 
+    async def validate_api_key(self) -> None:
+        """Makes a lightweight API call to confirm the key is valid before the first chunk."""
+        try:
+            await self._client.models.list()
+        except Exception as exc:
+            raise RuntimeError(f"OPENAI_API_KEY is invalid or unreachable: {exc}") from exc
+
     async def transcribe(
         self,
         wav_bytes: bytes,
