@@ -1,6 +1,6 @@
 # LORO — Compact Context
 > Cargar al inicio de cada sesión junto con CLAUDE.md.
-> Última actualización: 2026-03-02
+> Última actualización: 2026-03-01
 
 ---
 
@@ -50,7 +50,7 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 | Área | Estado | Notas |
 |------|--------|-------|
 | Audio capture | ✅ Estable | BlackHole requerido en macOS |
-| STT | 🟡 Funciona pero batch | Streaming experimental, no default |
+| STT | 🟡 Streaming activado | REALTIME_TRANSCRIPTION_ENABLED=1, fallback a batch automático |
 | Traducción | ✅ Estable | gpt-4o-mini, términos técnicos OK |
 | Overlay UI | ✅ Estable | Inspirado en Seagull, modo cinema/list |
 | Latencia primer subtítulo | 🔴 Alta | Cuello principal del pipeline |
@@ -64,12 +64,12 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 ### P1 — Importantes
 | ID | Descripción | Archivo |
 |----|-------------|---------|
-| BUG-06 | Sin timeout en `Queue.get()` — workers se cuelgan si audio listener falla | `main.py:313,407` |
-| BUG-07 | API key se valida tarde — error aparece al primer chunk, no al arrancar | `transcription_service.py:29` |
-| BUG-08 | `except Exception` genérico oculta errores reales — debugging imposible | `main.py:264,380,484,533` |
-| BUG-09 | `full_transcript_buffer` sin lock — crash posible durante export | `overlay_ui.py:304,340,361` |
-| BUG-12 | `_list_audio_sources()` silencia todos los errores | `overlay_ui.py:859` |
-| BUG-13 | Sin feedback visual si falta BlackHole/VB-Cable | `overlay_ui.py` (UX) |
+| BUG-06 | Sin timeout en `Queue.get()` — workers se cuelgan si audio listener falla | `main.py` |
+| BUG-07 | ✅ RESUELTO | `validate_api_key()` en `transcription_service.py` + llamada en `main.py:start()` |
+| BUG-08 | `except Exception` genérico oculta errores reales — debugging imposible | `main.py` |
+| BUG-09 | `full_transcript_buffer` sin lock — crash posible durante export | `overlay_ui.py` |
+| BUG-12 | `_list_audio_sources()` silencia todos los errores | `overlay_ui.py` |
+| BUG-13 | ✅ RESUELTO | `show_error_dialog()` en `overlay_ui.py` + detección en `main.py:start()` |
 
 ### P2 — Código frágil
 BUG-14 (memory leak deque), BUG-15 (None checks), BUG-16 (regex sin tests),
@@ -99,11 +99,11 @@ BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22
 
 ## 7. Próximos pasos inmediatos
 
-1. **Testing macOS esta noche** — documentar bugs nuevos en `ALPHA/Loro/Backlog.md`
-2. **BUG-13** — feedback visual cuando falta BlackHole (mayor impacto en UX de first-run)
-3. **BUG-07** — validar API key al arrancar, no al primer chunk
-4. **Latencia** — evaluar activar streaming STT como default (hoy experimental)
-5. **F07** — packaging PyInstaller macOS para poder distribuir sin Python instalado
+1. **BUG-06** — agregar timeout a `Queue.get()` para evitar workers colgados
+2. **BUG-08** — reemplazar `except Exception` genérico con manejo específico
+3. **Latencia** — evaluar resultados del streaming STT activado (REALTIME_TRANSCRIPTION_ENABLED=1)
+4. **BUG-09** — agregar lock a `full_transcript_buffer` para evitar crash en export
+5. **F07** — packaging PyInstaller macOS
 
 ---
 
@@ -111,9 +111,25 @@ BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22
 
 ```bash
 cd "/Users/hola/Documents/New project"
-source .venv/bin/activate   # si existe
-pip install -r requirements.txt
+source .venv/bin/activate
 python main.py
 ```
 
-Prerequisito macOS: **BlackHole 2ch** instalado y configurado como output del sistema.
+**Prerequisitos macOS:**
+- **BlackHole 2ch** instalado y configurado como output del sistema
+- **Python 3.11 via Homebrew** (`/opt/homebrew/bin/python3.11`) — el venv DEBE crearse con esta versión
+- **PyQt6 6.8.1** — pinado en `requirements.txt`
+
+**Si el venv se corrompe o hay que recrearlo:**
+```bash
+rm -rf .venv
+/opt/homebrew/bin/python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+# Fix firma de plugins Qt en macOS Sequoia:
+xcrun install_name_tool -add_rpath \
+  .venv/lib/python3.11/site-packages/PyQt6/Qt6/lib \
+  .venv/lib/python3.11/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib
+codesign --force --sign - \
+  .venv/lib/python3.11/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib
+```
