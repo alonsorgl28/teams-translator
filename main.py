@@ -153,17 +153,20 @@ class MeetingTranslatorController:
     STALE_EMIT_RELAX_FACTOR = 2.0
     FIRST_EMIT_MIN_CHARS = 4
     MIN_STALENESS_SECONDS_LIVE = 6.0
-    MIN_CHUNK_STEP_SECONDS_LIVE = 0.85
-    MAX_CHUNK_SECONDS_LIVE = 1.0
+    MIN_CHUNK_STEP_SECONDS_LIVE = 0.70
+    MAX_CHUNK_SECONDS_LIVE = 0.90
     STARTUP_LISTENER_VALIDATION_SECONDS = 0.8
     PROVISIONAL_PREVIEW_MIN_WORDS = 2
-    SOURCE_TRANSLATION_MIN_WORDS = 4
-    SOURCE_TRANSLATION_MIN_CHARS = 18
-    SOURCE_TRANSLATION_MAX_AGE_SECONDS = 0.95
-    SOURCE_TRANSLATION_FIRST_AGE_SECONDS = 0.3
+    SOURCE_TRANSLATION_MIN_WORDS = 3
+    SOURCE_TRANSLATION_MIN_CHARS = 12
+    SOURCE_TRANSLATION_MAX_AGE_SECONDS = 0.60
+    SOURCE_TRANSLATION_FIRST_AGE_SECONDS = 0.15
     SOURCE_TRANSLATION_BACKLOG_MIN_WORDS = 2
-    SOURCE_TRANSLATION_FORCE_AFTER_FRAGMENTS = 2
-    SOURCE_TRANSLATION_FORCE_FRAGMENT_MIN_WORDS = 3
+    SOURCE_TRANSLATION_FORCE_AFTER_FRAGMENTS = 1
+    SOURCE_TRANSLATION_FORCE_FRAGMENT_MIN_WORDS = 2
+    PREVIEW_TRANSLATION_MIN_INTERVAL_SECONDS = 0.40
+    PREVIEW_TRANSLATION_MIN_WORDS = 1
+    PREVIEW_TRANSLATION_MAX_CHARS = 120
     SOURCE_INCOMPLETE_TRAILING_TOKENS = {
         "and",
         "or",
@@ -239,6 +242,22 @@ class MeetingTranslatorController:
             # Overlap that is too aggressive can outpace API throughput and create stale drops.
             configured_chunk_step = max(configured_chunk_step, min(chunk_seconds, self.MIN_CHUNK_STEP_SECONDS_LIVE))
         self.realtime_transcription_enabled = read_bool_env("REALTIME_TRANSCRIPTION_ENABLED", False)
+        self.preview_translation_enabled = read_bool_env("PREVIEW_TRANSLATION_ENABLED", not self.literal_complete_mode)
+        self.preview_translation_min_interval_seconds = max(
+            0.2,
+            read_float_env(
+                "PREVIEW_TRANSLATION_MIN_INTERVAL_SECONDS",
+                self.PREVIEW_TRANSLATION_MIN_INTERVAL_SECONDS,
+            ),
+        )
+        self.preview_translation_min_words = max(
+            1,
+            read_int_env("PREVIEW_TRANSLATION_MIN_WORDS", self.PREVIEW_TRANSLATION_MIN_WORDS),
+        )
+        self.preview_translation_max_chars = max(
+            24,
+            read_int_env("PREVIEW_TRANSLATION_MAX_CHARS", self.PREVIEW_TRANSLATION_MAX_CHARS),
+        )
         self.listener = SystemAudioListener(
             loop=self.loop,
             output_queue=self.audio_queue,
@@ -285,6 +304,7 @@ class MeetingTranslatorController:
         self.transcribe_task: Optional[asyncio.Task[None]] = None
         self.translate_task: Optional[asyncio.Task[None]] = None
         self.realtime_audio_task: Optional[asyncio.Task[None]] = None
+        self._realtime_connect_task: Optional[asyncio.Task[None]] = None
         self._toggle_task: Optional[asyncio.Task[None]] = None
         self.debug_enabled = os.getenv("DEBUG_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
         self.filter_gibberish = read_bool_env("FILTER_GIBBERISH", True)
@@ -293,6 +313,8 @@ class MeetingTranslatorController:
         self.transcription_errors = 0
         self.translation_errors = 0
         self.translation_fallbacks = 0
+        self._api_key_validated = False
+        self.validate_api_key_on_start = read_bool_env("VALIDATE_API_KEY_ON_START", False)
         self.skipped_audio_chunks = 0
         self.skipped_text_chunks = 0
         self.skipped_stale_segments = 0
@@ -318,6 +340,10 @@ class MeetingTranslatorController:
         self._pending_source_fragment_count = 0
         self._source_preview_active = False
         self._using_realtime_transcription = False
+        self._preview_translate_task: Optional[asyncio.Task[None]] = None
+        self._preview_translation_pending_source = ""
+        self._last_preview_translation_at = 0.0
+        self._last_preview_translated_norm = ""
 
         self.ui.toggle_listening.connect(self._on_toggle_listening)
         self.ui.copy_requested.connect(self._on_copy_requested)
@@ -339,9 +365,12 @@ class MeetingTranslatorController:
                 return
             self.running = True
         try:
+            await self._cancel_preview_translation_task()
+            await self._cancel_realtime_connect_task()
             self._ensure_services()
-            if self.transcriber is not None:
+            if self.transcriber is not None and self.validate_api_key_on_start and not self._api_key_validated:
                 await self.transcriber.validate_api_key()
+                self._api_key_validated = True
             self._clear_runtime_queues()
             self._last_rendered_normalized = ""
             self._recent_rendered_normalized.clear()
@@ -354,18 +383,13 @@ class MeetingTranslatorController:
             self._reset_pending_source_buffer()
             self._source_preview_active = False
             self._using_realtime_transcription = False
+            self._reset_preview_translation_state()
             if self.transcriber is not None:
                 self.transcriber.reset_context()
             if self.translator is not None and hasattr(self.translator, "reset_context"):
                 self.translator.reset_context()
             if self.realtime_transcriber is not None:
                 self.realtime_transcriber.reset_context()
-                try:
-                    await self.realtime_transcriber.start()
-                    self._using_realtime_transcription = True
-                except Exception as exc:  # noqa: BLE001 - graceful batch fallback
-                    logging.warning("Realtime transcription unavailable, falling back to batch: %s", exc)
-                    self._using_realtime_transcription = False
             self.metrics_reporter.start_session()
             self.listener.start()
         except Exception as exc:  # noqa: BLE001 - service startup boundary
@@ -394,19 +418,17 @@ class MeetingTranslatorController:
             self.ui.set_listening(False)
             return
 
-        if self._using_realtime_transcription:
-            self.realtime_audio_task = asyncio.create_task(
-                self._realtime_audio_sender_loop(),
-                name="realtime-audio-sender",
-            )
-            self.transcribe_task = asyncio.create_task(
-                self._realtime_transcription_worker_loop(),
-                name="realtime-transcription-worker",
-            )
-        else:
-            self.transcribe_task = asyncio.create_task(self._transcription_worker_loop(), name="transcription-worker")
+        # Start in batch mode immediately; upgrade to realtime once the websocket is ready.
+        self.transcribe_task = asyncio.create_task(self._transcription_worker_loop(), name="transcription-worker")
         self.translate_task = asyncio.create_task(self._translation_worker_loop(), name="translation-worker")
-        self.ui.set_status("Listening to system audio...")
+        if self.realtime_transcription_enabled and self.realtime_transcriber is not None:
+            self._realtime_connect_task = asyncio.create_task(
+                self._activate_realtime_transcription(),
+                name="realtime-connect",
+            )
+            self.ui.set_status("Listening to system audio... (warming realtime)")
+        else:
+            self.ui.set_status("Listening to system audio...")
         await asyncio.sleep(self.STARTUP_LISTENER_VALIDATION_SECONDS)
         if not self.listener.is_running:
             await self.stop()
@@ -426,6 +448,7 @@ class MeetingTranslatorController:
                 return
             self.running = False
         self.listener.stop()
+        await self._cancel_realtime_connect_task()
 
         for task in (self.transcribe_task, self.translate_task, self.realtime_audio_task):
             if task:
@@ -444,6 +467,7 @@ class MeetingTranslatorController:
         self._flush_pending_render(language="auto")
         self._clear_runtime_queues()
         self._reset_pending_source_buffer()
+        await self._cancel_preview_translation_task()
         self._source_preview_active = False
         self.ui.clear_live_preview()
         summary = self.metrics_reporter.finalize_session()
@@ -457,14 +481,68 @@ class MeetingTranslatorController:
         self.listener.stop()
         self.metrics_reporter.finalize_session()
         self._clear_runtime_queues()
+        if self._realtime_connect_task and not self._realtime_connect_task.done():
+            self._realtime_connect_task.cancel()
+        self._realtime_connect_task = None
         if self._toggle_task and not self._toggle_task.done():
             self._toggle_task.cancel()
         for task in (self.transcribe_task, self.translate_task, self.realtime_audio_task):
             if task and not task.done():
                 task.cancel()
+        if self._preview_translate_task and not self._preview_translate_task.done():
+            self._preview_translate_task.cancel()
+        self._preview_translate_task = None
+        self._reset_preview_translation_state()
         if self.realtime_transcriber is not None and self._using_realtime_transcription and self.loop.is_running():
             self.loop.create_task(self.realtime_transcriber.stop())
         self._using_realtime_transcription = False
+
+    async def _cancel_realtime_connect_task(self) -> None:
+        task = self._realtime_connect_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._realtime_connect_task = None
+
+    async def _activate_realtime_transcription(self) -> None:
+        if self.realtime_transcriber is None:
+            self._realtime_connect_task = None
+            return
+        try:
+            await self.realtime_transcriber.start()
+            async with self._running_lock:
+                if not self.running:
+                    await self.realtime_transcriber.stop()
+                    return
+            if self._using_realtime_transcription:
+                return
+            old_task = self.transcribe_task
+            if old_task is not None and not old_task.done():
+                old_task.cancel()
+                try:
+                    await old_task
+                except asyncio.CancelledError:
+                    pass
+            self._using_realtime_transcription = True
+            self.realtime_audio_task = asyncio.create_task(
+                self._realtime_audio_sender_loop(),
+                name="realtime-audio-sender",
+            )
+            self.transcribe_task = asyncio.create_task(
+                self._realtime_transcription_worker_loop(),
+                name="realtime-transcription-worker",
+            )
+            if self.debug_enabled:
+                logging.info("debug_realtime_upgrade active=1")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - realtime startup boundary
+            logging.warning("Realtime transcription warmup failed, staying in batch mode: %s", exc)
+        finally:
+            self._realtime_connect_task = None
 
     async def _transcription_worker_loop(self) -> None:
         while True:
@@ -577,8 +655,7 @@ class MeetingTranslatorController:
                 if event.kind == "preview":
                     preview_text = self._clean_transcription_noise(event.text)
                     if preview_text:
-                        self._source_preview_active = True
-                        self.ui.set_live_preview(preview_text)
+                        await self._handle_live_preview(preview_text)
                     continue
                 if event.kind == "error":
                     self.transcription_errors += 1
@@ -629,6 +706,7 @@ class MeetingTranslatorController:
             return
 
         self._using_realtime_transcription = False
+        await self._cancel_preview_translation_task()
         self._source_preview_active = False
         self.ui.clear_live_preview()
         self.ui.set_status(f"{reason}. Falling back to batch transcription.")
@@ -861,8 +939,79 @@ class MeetingTranslatorController:
         cleaned = self._clean_transcription_noise(preview_text)
         if not cleaned:
             return
+        await self._handle_live_preview(cleaned)
+
+    async def _handle_live_preview(self, source_preview_text: str) -> None:
+        cleaned = self._normalize_fragment(source_preview_text)
+        if not cleaned:
+            return
         self._source_preview_active = True
+        # Show immediate source preview to keep UI responsive while translation is computed.
         self.ui.set_live_preview(cleaned)
+        if not self.preview_translation_enabled or self.translator is None:
+            return
+        if len(re.findall(r"\b\w+\b", cleaned)) < self.preview_translation_min_words:
+            return
+        clipped = self._clip_preview_fragment(cleaned)
+        if not clipped:
+            return
+        if clipped == self._preview_translation_pending_source:
+            return
+        self._preview_translation_pending_source = clipped
+        if self._preview_translate_task is None or self._preview_translate_task.done():
+            self._preview_translate_task = asyncio.create_task(
+                self._preview_translation_loop(),
+                name="preview-translation",
+            )
+
+    async def _preview_translation_loop(self) -> None:
+        try:
+            while True:
+                source_text = self._preview_translation_pending_source.strip()
+                if not source_text or self.translator is None:
+                    break
+                self._preview_translation_pending_source = ""
+                elapsed = perf_counter() - self._last_preview_translation_at
+                wait_s = self.preview_translation_min_interval_seconds - elapsed
+                if wait_s > 0:
+                    await asyncio.sleep(wait_s)
+                translated = await self.translator.translate_text(
+                    source_text,
+                    target_language=self.target_language,
+                    remember_context=False,
+                )
+                self._last_preview_translation_at = perf_counter()
+                rendered = self._normalize_fragment(translated) or source_text
+                norm = rendered.lower()
+                if norm and norm != self._last_preview_translated_norm:
+                    self._last_preview_translated_norm = norm
+                    self._source_preview_active = True
+                    self.ui.set_live_preview(rendered)
+                if not self._preview_translation_pending_source:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - preview UX boundary
+            if self.debug_enabled:
+                logging.info("debug_preview_translation_error error=%s", exc)
+        finally:
+            self._preview_translate_task = None
+
+    async def _cancel_preview_translation_task(self) -> None:
+        task = self._preview_translate_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._preview_translate_task = None
+        self._reset_preview_translation_state()
+
+    def _reset_preview_translation_state(self) -> None:
+        self._preview_translation_pending_source = ""
+        self._last_preview_translation_at = 0.0
+        self._last_preview_translated_norm = ""
 
     def _on_toggle_listening(self, should_listen: bool) -> None:
         self._schedule_toggle(should_listen)
@@ -903,6 +1052,7 @@ class MeetingTranslatorController:
         self._last_rendered_normalized = ""
         self._last_emitted_text = ""
         self._reset_pending_source_buffer()
+        self._reset_preview_translation_state()
         self._source_preview_active = False
         self.ui.clear_live_preview()
         self.ui.clear_segments()
@@ -933,6 +1083,7 @@ class MeetingTranslatorController:
                 self.translator.reset_context()
             elif hasattr(self.translator, "clear_context"):
                 self.translator.clear_context()
+        self._reset_preview_translation_state()
         self.ui.set_status(f"Settings applied: {source_language} -> {target_language}.")
 
     def _on_audio_source_changed(self, audio_source: str) -> None:
@@ -1348,6 +1499,16 @@ class MeetingTranslatorController:
         cleaned = re.sub(r"^\.\.\.\s*", "", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned)
         return cleaned.strip()
+
+    def _clip_preview_fragment(self, text: str) -> str:
+        normalized = self._normalize_fragment(text)
+        if len(normalized) <= self.preview_translation_max_chars:
+            return normalized
+        clipped = normalized[-self.preview_translation_max_chars :]
+        first_space = clipped.find(" ")
+        if first_space > 0:
+            clipped = clipped[first_space + 1 :]
+        return clipped.strip()
 
     @staticmethod
     def _target_language_code(language: str) -> str:

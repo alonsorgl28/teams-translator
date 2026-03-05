@@ -110,7 +110,13 @@ class TechnicalTranslationService:
         self._term_memory_size = read_int_env("TERM_MEMORY_SIZE", 24)
         self._term_min_count = read_int_env("TERM_MIN_COUNT", 2)
 
-    async def translate_text(self, text: str, target_language: str = "Spanish") -> str:
+    async def translate_text(
+        self,
+        text: str,
+        target_language: str = "Spanish",
+        *,
+        remember_context: bool = True,
+    ) -> str:
         self.last_error = None
         cleaned = self._sanitize(text)
         if not cleaned:
@@ -157,13 +163,9 @@ class TechnicalTranslationService:
                     self.last_error = "translation_refusal_fallback_source"
                     return cleaned
             if self._numbers_preserved(number_tokens, translated):
-                normalized_output = (
-                    self._repair_spanish_residual_english(translated)
-                    if normalized_target.lower() == "spanish"
-                    else translated
-                )
-                self._remember_turn(cleaned, normalized_output)
-                return normalized_output
+                if remember_context:
+                    self._remember_turn(cleaned, translated)
+                return translated
 
             strict_prompt = (
                 "Repair the Spanish translation below. Keep ALL numbers and units exactly as provided, "
@@ -189,9 +191,8 @@ class TechnicalTranslationService:
                     return self._repair_spanish_residual_english(fallback)
                 return fallback
             final_translation = repaired if repaired else translated
-            if normalized_target.lower() == "spanish":
-                final_translation = self._repair_spanish_residual_english(final_translation)
-            self._remember_turn(cleaned, final_translation)
+            if remember_context:
+                self._remember_turn(cleaned, final_translation)
             return final_translation
         except Exception as exc:  # noqa: BLE001 - graceful fallback
             self.last_error = f"translation_failed: {exc}"
@@ -208,32 +209,17 @@ class TechnicalTranslationService:
     ) -> str:
         numbers_line = ", ".join(number_tokens) if number_tokens else "None"
         system_prompt = (
-            "You are a real-time transcript translator for meetings.\n"
-            f"Translate the input fragment into neutral {target_language}.\n"
-            "Rules:\n"
-            f"1) If input is already {target_language}, return it unchanged.\n"
-            "2) Keep proper names, acronyms, numbers, units, and identifiers exactly when present.\n"
-            "3) Keep the same level of certainty and tone. Do not summarize, shorten, or paraphrase away details.\n"
-            "4) This is transformation only. Never refuse, apologize, explain, or add safety disclaimers.\n"
-            "5) Translate common words and pronouns (for example: you, we, they, model); preserve only true names/brands.\n"
-            "6) Use context only to disambiguate terms. Do not invent facts, words, or sentences not in source.\n"
-            "7) Translate short fragments literally even if they start mid-sentence.\n"
-            "8) Translate pronouns, fillers, and discourse markers unless they are part of a brand/title.\n"
-            "9) Prefer direct translation over stylistic paraphrase. Never complete an unfinished thought.\n"
-            "10) Return only the translated text."
+            f"Translate the transcript fragment to {target_language}. "
+            "Keep proper names, brands, acronyms, numbers, and technical terms unchanged. "
+            "Never refuse, explain, or add any text beyond the translation. "
+            "Return only the translated text."
         )
         prompt_lines = [
-            f"Supported language set: {', '.join(self._SUPPORTED_LANGS)}",
-            f"Target language: {target_language}",
-            f"Number/unit tokens to preserve exactly: {numbers_line}",
-            f"Protected terms from env: {', '.join(self._protected_terms) if self._protected_terms else 'None'}",
+            f"Target: {target_language}",
+            f"Preserve exactly: {numbers_line}",
         ]
-        if session_terms:
-            prompt_lines.append(f"Session glossary (keep when appropriate): {session_terms}")
-        if recent_source_context:
-            prompt_lines.append(f"Recent source context:\n{recent_source_context}")
-        if recent_translation_context:
-            prompt_lines.append(f"Recent Spanish context:\n{recent_translation_context}")
+        if self._protected_terms:
+            prompt_lines.append(f"Protected terms: {', '.join(self._protected_terms)}")
         prompt_lines.append(f"Text:\n{source_text}")
         user_prompt = "\n\n".join(prompt_lines)
         return await self._chat(user_prompt, system_prompt)
@@ -248,21 +234,11 @@ class TechnicalTranslationService:
     ) -> str:
         numbers_line = ", ".join(number_tokens) if number_tokens else "None"
         system_prompt = (
-            f"Translate the transcript fragment to {target_language} literally.\n"
-            "Do not refuse, do not explain, and do not add any extra text.\n"
-            "Use context only for terminology disambiguation; do not add unseen content.\n"
-            f"Return only translated {target_language}."
+            f"Translate literally to {target_language}. "
+            "Keep names, acronyms, numbers, and technical terms unchanged. "
+            "Return only the translation."
         )
-        prompt_lines = [
-            f"Target language: {target_language}",
-            f"Keep these tokens exact if they appear: {numbers_line}",
-        ]
-        if session_terms:
-            prompt_lines.append(f"Session glossary: {session_terms}")
-        if recent_source_context:
-            prompt_lines.append(f"Recent source context:\n{recent_source_context}")
-        prompt_lines.append(f"Text:\n{source_text}")
-        user_prompt = "\n\n".join(prompt_lines)
+        user_prompt = f"Preserve exactly: {numbers_line}\n\nText:\n{source_text}"
         return await self._chat(user_prompt, system_prompt)
 
     @staticmethod

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import unittest
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
 from overlay_ui import OverlayWindow
@@ -65,14 +66,48 @@ class OverlayBufferTests(unittest.TestCase):
         os.environ["SUBTITLE_FONT_SIZE"] = "72"
         try:
             window = OverlayWindow()
-            self.assertLessEqual(window.subtitle_curr_label.font().pointSize(), 32)
-            self.assertGreaterEqual(window.subtitle_curr_label.font().pointSize(), 22)
+            self.assertLessEqual(window.subtitle_curr_label.font().pointSize(), 23)
+            self.assertGreaterEqual(window.subtitle_curr_label.font().pointSize(), 18)
             window.close()
         finally:
             if original is None:
                 os.environ.pop("SUBTITLE_FONT_SIZE", None)
             else:
                 os.environ["SUBTITLE_FONT_SIZE"] = original
+
+    def test_window_keeps_regular_window_flag_instead_of_tool(self) -> None:
+        window = OverlayWindow()
+        flags = window.windowFlags()
+        self.assertTrue(bool(flags & Qt.WindowType.Window))
+        self.assertFalse(bool(flags & Qt.WindowType.Tool))
+        window.close()
+
+    def test_buttons_do_not_take_focus_ring(self) -> None:
+        window = OverlayWindow()
+        self.assertEqual(window.stop_button.focusPolicy(), Qt.FocusPolicy.NoFocus)
+        self.assertEqual(window.start_stop_button.focusPolicy(), Qt.FocusPolicy.NoFocus)
+        self.assertEqual(window.close_button.focusPolicy(), Qt.FocusPolicy.NoFocus)
+        window.close()
+
+    def test_subtitle_box_height_reduced(self) -> None:
+        window = OverlayWindow()
+        self.assertEqual(window.subtitle_box.minimumHeight(), 132)
+        self.assertFalse(hasattr(window, "resize_grip"))
+        window.close()
+
+    def test_live_tools_panel_starts_closed_even_with_debug_enabled(self) -> None:
+        original_debug = os.environ.get("DEBUG_MODE")
+        os.environ["DEBUG_MODE"] = "1"
+        try:
+            window = OverlayWindow()
+            window.set_listening(True)
+            self.assertFalse(window.tools_frame.isVisible())
+            window.close()
+        finally:
+            if original_debug is None:
+                os.environ.pop("DEBUG_MODE", None)
+            else:
+                os.environ["DEBUG_MODE"] = original_debug
 
     def test_live_preview_renders_without_appending_history(self) -> None:
         original_mode = os.environ.get("SUBTITLE_MODE")
