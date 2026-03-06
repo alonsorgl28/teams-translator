@@ -60,6 +60,36 @@ class LooksSpanishTests(unittest.TestCase):
         self.assertEqual(service._recent_translations, [])
         self.assertEqual(service._session_terms, {})
 
+    def test_detects_non_spanish_output_when_cjk_present(self) -> None:
+        self.assertTrue(TechnicalTranslationService._looks_non_spanish_output("这是一个测试"))
+        self.assertTrue(TechnicalTranslationService._looks_non_spanish_output("hola 你好 mundo"))
+
+    def test_detects_non_spanish_output_when_english_function_words_dominate(self) -> None:
+        self.assertTrue(
+            TechnicalTranslationService._looks_non_spanish_output(
+                "this is the model and it is running in the system"
+            )
+        )
+        self.assertFalse(
+            TechnicalTranslationService._looks_non_spanish_output(
+                "este es el modelo y está corriendo en el sistema"
+            )
+        )
+
+    def test_flags_output_too_similar_to_source_without_spanish_markers(self) -> None:
+        self.assertTrue(
+            TechnicalTranslationService._looks_too_similar_to_source(
+                "which model is better codex",
+                "wich model is beter codex",
+            )
+        )
+        self.assertFalse(
+            TechnicalTranslationService._looks_too_similar_to_source(
+                "which model is better codex",
+                "qué modelo es mejor codex",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

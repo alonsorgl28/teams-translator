@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
-    QSizeGrip,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -57,17 +56,18 @@ class SettingsDialog(QDialog):
         self._audio_sources = audio_sources or ["System loopback (default)"]
         self.setWindowTitle(f"{self._brand_name} Settings")
         self.setModal(True)
-        self.setMinimumWidth(860)
+        self.setMinimumWidth(820)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(30, 24, 30, 28)
-        root.setSpacing(16)
+        root.setContentsMargins(24, 20, 24, 22)
+        root.setSpacing(14)
 
         top_row = QHBoxLayout()
         top_row.setSpacing(10)
         root.addLayout(top_row)
 
         self.back_button = QPushButton("Back")
+        self.back_button.setObjectName("ghostButton")
         self.back_button.clicked.connect(self.reject)
         top_row.addWidget(self.back_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
@@ -75,16 +75,18 @@ class SettingsDialog(QDialog):
 
         brand = QLabel(self._brand_name)
         brand.setObjectName("settingsBrand")
-        brand.setFont(self._make_ui_font(18, bold=True))
+        brand.setFont(self._make_ui_font(16, bold=True))
         top_row.addWidget(brand, alignment=Qt.AlignmentFlag.AlignCenter)
 
         top_row.addStretch(1)
 
         self.minimize_button = QPushButton("-")
+        self.minimize_button.setObjectName("tinyButton")
         self.minimize_button.clicked.connect(self.showMinimized)
         top_row.addWidget(self.minimize_button)
 
         self.close_button = QPushButton("X")
+        self.close_button.setObjectName("tinyButton")
         self.close_button.clicked.connect(self.reject)
         top_row.addWidget(self.close_button)
 
@@ -159,84 +161,101 @@ class SettingsDialog(QDialog):
         root.addLayout(bottom)
 
         self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setObjectName("ghostButton")
         self.cancel_button.clicked.connect(self.reject)
         bottom.addWidget(self.cancel_button)
 
         self.apply_button = QPushButton("Apply")
+        self.apply_button.setObjectName("applyButton")
         self.apply_button.clicked.connect(self.accept)
         bottom.addWidget(self.apply_button)
 
         self.setStyleSheet(
             """
             QDialog {
-                background-color: #f2f0eb;
-                border: 1px solid rgba(159, 171, 179, 96);
-                border-radius: 24px;
+                background-color: #1f252f;
+                border: 1px solid rgba(128, 141, 160, 110);
+                border-radius: 18px;
             }
             QLabel {
-                color: #42505b;
-                font-size: 13px;
+                color: #bcc7d4;
+                font-size: 12px;
             }
             #settingsBrand {
-                color: #4ea894;
-                letter-spacing: 0.4px;
+                color: #e3e9f1;
+                letter-spacing: 1.4px;
             }
             #sectionTitle {
-                color: #2e3a43;
-                font-size: 17px;
+                color: #e9eef6;
+                font-size: 15px;
             }
             #fieldLabel {
-                color: #66747f;
+                color: #98a8bb;
             }
             #arrowLabel {
-                color: #9aa6ad;
+                color: #7f91a8;
                 min-width: 36px;
             }
             #detectedBanner {
-                background-color: #dfeeee;
-                color: #4b9a8a;
-                border-radius: 16px;
-                padding: 12px;
-                border: 1px solid rgba(99, 173, 155, 56);
+                background-color: rgba(47, 77, 108, 124);
+                color: #b7d7f8;
+                border-radius: 12px;
+                padding: 11px;
+                border: 1px solid rgba(118, 150, 185, 136);
             }
             #betaNote {
-                background-color: #e8dfcd;
-                color: #5f6974;
-                border-radius: 18px;
-                border: 1px dashed rgba(175, 163, 133, 120);
-                padding: 20px;
+                background-color: rgba(34, 40, 50, 210);
+                color: #9fabb9;
+                border-radius: 12px;
+                border: 1px solid rgba(102, 116, 134, 110);
+                padding: 16px;
             }
             QPushButton {
-                background-color: rgba(255, 255, 255, 198);
-                color: #5f6d77;
-                border: 1px solid rgba(181, 190, 197, 242);
-                border-radius: 16px;
-                padding: 7px 16px;
-                min-height: 38px;
-                font-size: 13px;
+                background-color: rgba(49, 58, 72, 208);
+                color: #d1dae5;
+                border: 1px solid rgba(109, 123, 141, 158);
+                border-radius: 11px;
+                padding: 6px 14px;
+                min-height: 34px;
+                font-size: 12px;
             }
             QPushButton:hover {
-                background-color: rgba(255, 255, 255, 245);
+                background-color: rgba(63, 75, 92, 228);
+            }
+            #tinyButton {
+                min-width: 36px;
+                max-width: 36px;
+                min-height: 34px;
+                max-height: 34px;
+                padding: 0;
+            }
+            #ghostButton {
+                background-color: rgba(38, 46, 58, 188);
+            }
+            #applyButton {
+                background-color: rgba(62, 94, 132, 224);
+                border: 1px solid rgba(130, 167, 210, 180);
+                color: #eef4fb;
             }
             QComboBox {
-                background-color: rgba(255, 255, 255, 245);
-                color: #344049;
-                border: 1px solid rgba(207, 212, 217, 242);
-                border-radius: 20px;
-                padding: 9px 14px;
-                min-height: 38px;
-                font-size: 15px;
+                background-color: rgba(30, 36, 46, 232);
+                color: #d7dfea;
+                border: 1px solid rgba(102, 117, 136, 150);
+                border-radius: 12px;
+                padding: 8px 12px;
+                min-height: 34px;
+                font-size: 14px;
             }
             QComboBox::drop-down {
                 border: none;
-                width: 28px;
+                width: 24px;
             }
             QComboBox QAbstractItemView {
-                background-color: #ffffff;
-                color: #344049;
-                border: 1px solid rgba(193, 198, 205, 235);
-                selection-background-color: rgba(98, 163, 146, 32);
-                selection-color: #1e272e;
+                background-color: #1f252f;
+                color: #d7dfea;
+                border: 1px solid rgba(102, 117, 136, 150);
+                selection-background-color: rgba(92, 128, 172, 110);
+                selection-color: #f2f6fb;
                 outline: 0;
             }
             """
@@ -271,7 +290,7 @@ class OverlayWindow(QWidget):
     DRAG_ZONE_HEIGHT = 56
     DEFAULT_FULL_TRANSCRIPT_MAX_SEGMENTS = 500
     DEFAULT_HISTORY_VISIBLE_SEGMENTS = 24
-    DEFAULT_SUBTITLE_FONT_SIZE = 28
+    DEFAULT_SUBTITLE_FONT_SIZE = 20
     MONOSPACE_FONT_FAMILIES = ["Menlo", "Consolas", "Courier New", "Monospace"]
 
     toggle_listening = pyqtSignal(bool)
@@ -303,8 +322,8 @@ class OverlayWindow(QWidget):
             "HISTORY_VISIBLE_SEGMENTS",
             self.DEFAULT_HISTORY_VISIBLE_SEGMENTS,
         )
-        self._history_expanded = read_bool_env("HISTORY_PANEL_OPEN", False)
-        self._tools_panel_open = read_bool_env("UI_TOOLS_PANEL_OPEN", False)
+        self._history_expanded = False
+        self._tools_panel_open = False
 
         self._subtitle_mode = (os.getenv("SUBTITLE_MODE") or "cinema").strip().lower()
         self._subtitle_max_line_chars = read_int_env("SUBTITLE_MAX_LINE_CHARS", 42)
@@ -369,6 +388,9 @@ class OverlayWindow(QWidget):
             self._flush_cinema_text()
         if listening and not was_listening:
             self._reset_live_subtitles()
+            # Keep the live experience clean by default on every new run.
+            self._history_expanded = False
+            self._tools_panel_open = False
         self._refresh_state_ui()
 
     def set_status(self, message: str) -> None:
@@ -429,16 +451,16 @@ class OverlayWindow(QWidget):
         self._panel = panel
 
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(26, 18, 26, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(22, 14, 22, 14)
+        layout.setSpacing(10)
 
         top_row = QHBoxLayout()
-        top_row.setSpacing(10)
+        top_row.setSpacing(8)
         layout.addLayout(top_row)
 
         self.brand_label = QLabel(self._brand_name)
         self.brand_label.setObjectName("brandLabel")
-        self.brand_label.setFont(self._make_ui_font(15, bold=True))
+        self.brand_label.setFont(self._make_ui_font(14, bold=True))
         top_row.addWidget(self.brand_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         top_row.addStretch(1)
@@ -459,6 +481,11 @@ class OverlayWindow(QWidget):
         self.info_button.clicked.connect(self._show_info_hint)
         top_row.addWidget(self.info_button)
 
+        self.minimize_button = QPushButton("–")
+        self.minimize_button.setObjectName("iconButton")
+        self.minimize_button.clicked.connect(self.showMinimized)
+        top_row.addWidget(self.minimize_button)
+
         self.close_button = QPushButton("×")
         self.close_button.setObjectName("iconButton")
         self.close_button.clicked.connect(self.close)
@@ -467,8 +494,8 @@ class OverlayWindow(QWidget):
         self.idle_frame = QFrame()
         self.idle_frame.setObjectName("idleFrame")
         idle_layout = QVBoxLayout(self.idle_frame)
-        idle_layout.setContentsMargins(0, 18, 0, 26)
-        idle_layout.setSpacing(10)
+        idle_layout.setContentsMargins(0, 8, 0, 10)
+        idle_layout.setSpacing(6)
 
         idle_layout.addStretch(1)
 
@@ -477,9 +504,9 @@ class OverlayWindow(QWidget):
         self.start_stop_button = QPushButton("START")
         self.start_stop_button.setObjectName("startButton")
         self.start_stop_button.clicked.connect(self._on_start_stop_clicked)
-        self.start_stop_button.setMinimumSize(148, 50)
+        self.start_stop_button.setMinimumSize(126, 40)
         self.start_stop_button.setIcon(self._make_status_dot_icon("#2dd86f"))
-        self.start_stop_button.setIconSize(QSize(10, 10))
+        self.start_stop_button.setIconSize(QSize(8, 8))
         button_row.addWidget(self.start_stop_button)
         button_row.addStretch(1)
         idle_layout.addLayout(button_row)
@@ -501,8 +528,8 @@ class OverlayWindow(QWidget):
         self.subtitle_box = QFrame()
         self.subtitle_box.setObjectName("subtitleBox")
         subtitle_layout = QVBoxLayout(self.subtitle_box)
-        subtitle_layout.setContentsMargins(34, 18, 34, 16)
-        subtitle_layout.setSpacing(8)
+        subtitle_layout.setContentsMargins(24, 10, 24, 10)
+        subtitle_layout.setSpacing(5)
 
         self.subtitle_prev_label = QLabel("")
         self.subtitle_prev_label.setObjectName("subtitlePrev")
@@ -515,7 +542,7 @@ class OverlayWindow(QWidget):
         self.subtitle_curr_label.setWordWrap(True)
         self.subtitle_curr_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         subtitle_layout.addWidget(self.subtitle_curr_label)
-        self.subtitle_box.setMinimumHeight(170)
+        self.subtitle_box.setMinimumHeight(132)
         live_layout.addWidget(self.subtitle_box)
 
         self.bottom_rule = QFrame()
@@ -582,16 +609,16 @@ class OverlayWindow(QWidget):
         self.status_label = QLabel("")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setFont(self._make_ui_font(13))
-        self.status_label.setMaximumWidth(560)
+        self.status_label.setFont(self._make_ui_font(12))
+        self.status_label.setMaximumWidth(500)
         footer_row.addWidget(self.status_label, stretch=1)
 
         self.stop_button = QPushButton("STOP")
         self.stop_button.setObjectName("stopButton")
         self.stop_button.clicked.connect(self._on_start_stop_clicked)
-        self.stop_button.setMinimumSize(128, 42)
+        self.stop_button.setMinimumSize(112, 38)
         self.stop_button.setIcon(self._make_status_dot_icon("#ff4a6a"))
-        self.stop_button.setIconSize(QSize(9, 9))
+        self.stop_button.setIconSize(QSize(8, 8))
         footer_row.addWidget(self.stop_button, alignment=Qt.AlignmentFlag.AlignRight)
 
         self.tools_frame = QFrame()
@@ -599,7 +626,7 @@ class OverlayWindow(QWidget):
         layout.addWidget(self.tools_frame)
 
         self.debug_bar = QHBoxLayout(self.tools_frame)
-        self.debug_bar.setContentsMargins(14, 12, 14, 12)
+        self.debug_bar.setContentsMargins(12, 10, 12, 10)
         self.debug_bar.setSpacing(8)
 
         self.copy_button = QPushButton("Copy")
@@ -644,122 +671,119 @@ class OverlayWindow(QWidget):
         self.shortcut_label.setFont(self._make_monospace_font(10))
         self.debug_bar.addWidget(self.shortcut_label)
 
-        self.minimize_button = QPushButton("Min")
-        self.minimize_button.clicked.connect(self.showMinimized)
-        self.debug_bar.addWidget(self.minimize_button)
-
-        self.resize_grip = QSizeGrip(panel)
-        self.resize_grip.setObjectName("resizeGrip")
-        self.resize_grip.setFixedSize(18, 18)
-        self.resize_grip.raise_()
+        self.tools_minimize_button = QPushButton("Min")
+        self.tools_minimize_button.clicked.connect(self.showMinimized)
+        self.debug_bar.addWidget(self.tools_minimize_button)
 
         subtitle_curr_font = self._make_monospace_font(
             read_int_env("SUBTITLE_FONT_SIZE", self.DEFAULT_SUBTITLE_FONT_SIZE),
             bold=True,
         )
-        subtitle_curr_size = max(22, min(subtitle_curr_font.pointSize(), 30))
-        self.subtitle_curr_label.setFont(self._make_ui_font(subtitle_curr_size, bold=True))
-        self.subtitle_prev_label.setFont(self._make_ui_font(max(15, subtitle_curr_size - 11)))
+        subtitle_curr_size = max(18, min(subtitle_curr_font.pointSize(), 23))
+        self.subtitle_curr_label.setFont(self._make_ui_font(subtitle_curr_size))
+        self.subtitle_prev_label.setFont(self._make_ui_font(max(12, subtitle_curr_size - 8)))
+        self._disable_focus_rings()
 
         self._install_shortcuts()
 
     def _apply_window_style(self) -> None:
         self.setWindowTitle(f"{self._brand_name} - Universal Real-Time Audio Translator")
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
+            Qt.WindowType.Window
+            | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
         )
+        self.setWindowFlag(Qt.WindowType.Tool, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setMinimumSize(760, 166)
-        self.resize(890, 172)
+        self.setMinimumSize(700, 146)
+        self.resize(840, 154)
 
         self.setStyleSheet(
             """
             #overlayPanel {
                 background-color: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(52, 53, 58, 232),
-                    stop:0.52 rgba(43, 44, 49, 228),
-                    stop:1 rgba(36, 37, 41, 232)
+                    stop:0 rgba(30, 35, 43, 236),
+                    stop:0.52 rgba(26, 31, 39, 232),
+                    stop:1 rgba(24, 28, 35, 238)
                 );
-                border: 1px solid rgba(188, 193, 204, 70);
-                border-radius: 26px;
+                border: 1px solid rgba(170, 180, 196, 74);
+                border-radius: 22px;
             }
             #brandLabel {
-                color: rgba(219, 222, 230, 192);
-                letter-spacing: 2.7px;
+                color: rgba(224, 230, 240, 196);
+                letter-spacing: 2.2px;
                 padding-left: 4px;
             }
             #iconButton {
-                min-width: 28px;
-                min-height: 24px;
-                max-height: 24px;
-                border-radius: 8px;
+                min-width: 24px;
+                min-height: 22px;
+                max-height: 22px;
+                border-radius: 7px;
                 background-color: transparent;
-                color: rgba(194, 200, 212, 132);
+                color: rgba(194, 202, 215, 152);
                 border: none;
                 padding: 0px 4px;
-                font-size: 13px;
+                font-size: 12px;
             }
             #iconButton:hover {
-                background-color: rgba(117, 124, 138, 44);
+                background-color: rgba(113, 124, 143, 46);
             }
             #iconButton:checked {
-                background-color: rgba(111, 120, 136, 74);
-                color: rgba(239, 243, 250, 196);
+                background-color: rgba(89, 102, 122, 92);
+                color: rgba(238, 243, 250, 214);
             }
             #idleFrame {
                 background-color: transparent;
             }
             #startButton {
-                background-color: rgba(84, 88, 97, 118);
-                color: rgba(229, 233, 240, 206);
-                border: 1px solid rgba(196, 204, 217, 74);
-                border-radius: 19px;
-                font-size: 15px;
+                background-color: rgba(63, 72, 87, 170);
+                color: rgba(232, 238, 246, 214);
+                border: 1px solid rgba(150, 165, 186, 90);
+                border-radius: 16px;
+                font-size: 14px;
                 font-weight: 500;
-                letter-spacing: 2.6px;
-                padding: 4px 18px;
+                letter-spacing: 2.2px;
+                padding: 4px 16px;
             }
             #startButton:hover {
-                background-color: rgba(96, 102, 114, 142);
+                background-color: rgba(78, 89, 106, 188);
             }
             #liveRule {
-                background-color: rgba(170, 178, 192, 34);
+                background-color: rgba(171, 183, 199, 30);
                 border: none;
             }
             #liveFrame {
                 background-color: transparent;
             }
             #subtitleBox {
-                background-color: rgba(18, 19, 24, 148);
-                border: 1px solid rgba(193, 200, 211, 40);
-                border-radius: 22px;
+                background-color: rgba(12, 15, 21, 174);
+                border: 1px solid rgba(183, 194, 209, 50);
+                border-radius: 18px;
             }
             #subtitlePrev {
-                color: rgba(214, 219, 227, 114);
-                font-weight: 500;
+                color: rgba(206, 216, 230, 162);
+                font-weight: 420;
             }
             #subtitleCurr {
-                color: rgba(249, 250, 252, 244);
-                font-weight: 700;
+                color: rgba(249, 251, 255, 252);
+                font-weight: 560;
             }
             #subtitleCurr[preview="true"] {
-                color: rgba(221, 226, 235, 162);
-                font-weight: 600;
+                color: rgba(217, 225, 236, 196);
+                font-weight: 470;
             }
             #liveTranscript {
-                background-color: rgba(14, 15, 19, 172);
-                color: rgba(231, 236, 244, 220);
-                border: 1px solid rgba(187, 194, 207, 54);
+                background-color: rgba(12, 14, 20, 182);
+                color: rgba(228, 235, 244, 216);
+                border: 1px solid rgba(181, 192, 208, 56);
                 border-radius: 14px;
-                padding: 10px;
+                padding: 8px;
             }
             #historyFrame {
-                background-color: rgba(13, 15, 19, 188);
-                border: 1px solid rgba(175, 186, 203, 50);
+                background-color: rgba(11, 13, 18, 198);
+                border: 1px solid rgba(168, 182, 203, 52);
                 border-radius: 16px;
             }
             #historyTitle {
@@ -771,8 +795,8 @@ class OverlayWindow(QWidget):
                 border: none;
             }
             #toolsFrame {
-                background-color: rgba(14, 15, 19, 126);
-                border: 1px solid rgba(183, 190, 202, 40);
+                background-color: rgba(12, 14, 20, 138);
+                border: 1px solid rgba(175, 186, 202, 44);
                 border-radius: 16px;
             }
             #liveDot {
@@ -784,21 +808,21 @@ class OverlayWindow(QWidget):
                 letter-spacing: 3.2px;
             }
             #statusLabel {
-                color: rgba(214, 219, 229, 128);
+                color: rgba(211, 219, 230, 134);
                 font-size: 11px;
             }
             #stopButton {
-                background-color: rgba(92, 95, 104, 118);
-                color: rgba(248, 186, 198, 224);
-                border: 1px solid rgba(225, 168, 180, 116);
-                border-radius: 18px;
+                background-color: rgba(67, 73, 84, 168);
+                color: rgba(246, 190, 200, 220);
+                border: 1px solid rgba(217, 165, 176, 132);
+                border-radius: 16px;
                 font-size: 12px;
                 font-weight: 500;
-                letter-spacing: 1.5px;
-                padding: 5px 16px;
+                letter-spacing: 1.3px;
+                padding: 4px 14px;
             }
             #stopButton:hover {
-                background-color: rgba(106, 91, 98, 156);
+                background-color: rgba(89, 78, 87, 202);
             }
             #debugLabel {
                 color: rgba(155, 232, 184, 214);
@@ -810,28 +834,30 @@ class OverlayWindow(QWidget):
             #footerFrame {
                 background-color: transparent;
             }
-            #resizeGrip {
-                background-color: transparent;
-                border-right: 1px solid rgba(198, 205, 217, 110);
-                border-bottom: 1px solid rgba(198, 205, 217, 110);
-                border-bottom-right-radius: 6px;
-            }
             QLabel, QCheckBox {
-                color: rgba(214, 222, 236, 196);
+                color: rgba(214, 223, 236, 198);
             }
             QPushButton {
-                background-color: rgba(67, 73, 84, 136);
-                color: rgba(229, 235, 244, 220);
-                border: 1px solid rgba(186, 194, 206, 64);
-                border-radius: 12px;
-                padding: 4px 12px;
-                min-height: 30px;
+                background-color: rgba(57, 66, 81, 162);
+                color: rgba(228, 236, 246, 220);
+                border: 1px solid rgba(171, 184, 203, 74);
+                border-radius: 10px;
+                padding: 3px 10px;
+                min-height: 28px;
             }
             QPushButton:hover {
-                background-color: rgba(88, 96, 110, 156);
+                background-color: rgba(72, 84, 102, 196);
+            }
+            QPushButton:focus {
+                outline: none;
             }
             """
         )
+
+    def _disable_focus_rings(self) -> None:
+        for button in self.findChildren(QPushButton):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
 
     def _install_shortcuts(self) -> None:
         self._shortcut_start_stop = QShortcut(QKeySequence("Space"), self)
@@ -869,21 +895,23 @@ class OverlayWindow(QWidget):
 
         self.status_label.setVisible(self._should_show_status_label(self.status_label.text()))
         self.history_frame.setVisible(self._listening and self._tools_panel_open and self._history_expanded)
-        show_advanced_tools = self._listening and self._tools_panel_open
+        show_advanced_tools = self._listening and self._tools_panel_open and self._debug_enabled
         self.tools_frame.setVisible(show_advanced_tools)
         self.debug_label.setVisible(show_advanced_tools and self._debug_enabled)
 
         self.start_stop_button.setText("START")
-        self.user_button.setChecked(self._tools_panel_open)
+        self.user_button.setVisible(self._debug_enabled)
+        self.user_button.setChecked(self._tools_panel_open and self._debug_enabled)
 
         if self._listening:
-            self.setMinimumHeight(294)
-            if self.height() < 294:
-                self.resize(max(self.width(), 890), 304)
+            self.setMinimumHeight(258)
+            if self.height() < 258:
+                self.resize(max(self.width(), 840), 266)
         else:
-            self.setMinimumHeight(196)
-            if self.height() < 196:
-                self.resize(max(self.width(), 890), 196)
+            target_idle_height = 154
+            self.setMinimumHeight(target_idle_height)
+            if self.height() != target_idle_height:
+                self.resize(max(self.width(), 840), target_idle_height)
 
     def _on_start_stop_clicked(self) -> None:
         next_state = not self._listening
@@ -895,6 +923,10 @@ class OverlayWindow(QWidget):
         self._refresh_state_ui()
 
     def _toggle_debug_tools(self) -> None:
+        if not self._debug_enabled:
+            self._tools_panel_open = False
+            self._refresh_state_ui()
+            return
         self._tools_panel_open = not self._tools_panel_open
         self._refresh_state_ui()
 
@@ -970,11 +1002,6 @@ class OverlayWindow(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override naming
         super().resizeEvent(event)
-        if hasattr(self, "resize_grip") and hasattr(self, "_panel"):
-            panel_rect = self._panel.rect()
-            x = panel_rect.width() - self.resize_grip.width() - 10
-            y = panel_rect.height() - self.resize_grip.height() - 10
-            self.resize_grip.move(x, y)
 
     def _is_user_at_bottom(self) -> bool:
         scrollbar = self.transcript_view.verticalScrollBar()
@@ -1057,15 +1084,19 @@ class OverlayWindow(QWidget):
     def _paint_live_subtitles(self) -> None:
         preview_active = bool(self._subtitle_preview_text.strip())
         prev_visible = self._subtitle_show_previous and bool(self._subtitle_prev_text.strip())
+        prev_text = self._subtitle_prev_text if prev_visible else ""
         curr_text = self._subtitle_curr_text
         curr_preview = False
 
-        if preview_active and not curr_text:
+        if preview_active:
             curr_text = self._subtitle_preview_text
             curr_preview = True
+            if self._subtitle_show_previous and self._subtitle_curr_text.strip():
+                prev_visible = True
+                prev_text = self._subtitle_curr_text
 
         self.subtitle_prev_label.setVisible(prev_visible)
-        self.subtitle_prev_label.setText(self._subtitle_prev_text if prev_visible else "")
+        self.subtitle_prev_label.setText(prev_text if prev_visible else "")
         self.subtitle_curr_label.setText(curr_text)
         self.subtitle_curr_label.setProperty("preview", curr_preview)
         self.subtitle_curr_label.style().unpolish(self.subtitle_curr_label)
@@ -1093,7 +1124,7 @@ class OverlayWindow(QWidget):
         if not self._listening:
             return False
         normalized = (text or "").lower()
-        return self._tools_panel_open or self._debug_enabled or "error" in normalized
+        return (self._debug_enabled and self._tools_panel_open) or "error" in normalized
 
     @staticmethod
     def _make_status_dot_icon(hex_color: str) -> QIcon:

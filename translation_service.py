@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import os
 import re
 from collections import deque
@@ -84,6 +85,69 @@ class TechnicalTranslationService:
         "modelos",
         "código",
     }
+    _ENGLISH_FUNCTION_WORDS: Final[set[str]] = {
+        "the",
+        "and",
+        "or",
+        "with",
+        "for",
+        "to",
+        "of",
+        "in",
+        "on",
+        "is",
+        "are",
+        "was",
+        "were",
+        "this",
+        "that",
+        "it",
+        "you",
+        "we",
+        "they",
+        "i",
+    }
+    _SPANISH_FUNCTION_WORDS: Final[set[str]] = {
+        "el",
+        "la",
+        "los",
+        "las",
+        "de",
+        "del",
+        "y",
+        "con",
+        "para",
+        "en",
+        "que",
+        "es",
+        "un",
+        "una",
+        "por",
+        "se",
+        "como",
+        "pero",
+        "muy",
+        "más",
+        "menos",
+        "hola",
+        "gracias",
+        "sí",
+        "no",
+        "bueno",
+        "buena",
+        "buen",
+    }
+    _TERM_LIKE_TOKENS: Final[set[str]] = {
+        "gpt",
+        "codex",
+        "claude",
+        "opus",
+        "openai",
+        "lex",
+        "fridman",
+        "youtube",
+        "ai",
+    }
 
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini") -> None:
         key = api_key or os.getenv("OPENAI_API_KEY")
@@ -162,6 +226,13 @@ class TechnicalTranslationService:
                     if normalized_target.lower() == "spanish"
                     else translated
                 )
+                if normalized_target.lower() == "spanish":
+                    normalized_output = await self._enforce_spanish_output(
+                        source_text=cleaned,
+                        current_output=normalized_output,
+                        number_tokens=number_tokens,
+                        target_language=normalized_target,
+                    )
                 self._remember_turn(cleaned, normalized_output)
                 return normalized_output
 
@@ -191,11 +262,43 @@ class TechnicalTranslationService:
             final_translation = repaired if repaired else translated
             if normalized_target.lower() == "spanish":
                 final_translation = self._repair_spanish_residual_english(final_translation)
+                final_translation = await self._enforce_spanish_output(
+                    source_text=cleaned,
+                    current_output=final_translation,
+                    number_tokens=number_tokens,
+                    target_language=normalized_target,
+                )
             self._remember_turn(cleaned, final_translation)
             return final_translation
         except Exception as exc:  # noqa: BLE001 - graceful fallback
             self.last_error = f"translation_failed: {exc}"
             return cleaned
+
+    async def _enforce_spanish_output(
+        self,
+        *,
+        source_text: str,
+        current_output: str,
+        number_tokens: list[str],
+        target_language: str,
+    ) -> str:
+        needs_fix = self._looks_non_spanish_output(current_output) or self._looks_too_similar_to_source(
+            source_text,
+            current_output,
+        )
+        if not needs_fix:
+            return current_output
+        retry = await self._translate_literal(
+            source_text,
+            number_tokens,
+            target_language=target_language,
+            recent_source_context="",
+            session_terms="",
+        )
+        candidate = retry or current_output
+        if self._looks_non_spanish_output(candidate) or self._looks_too_similar_to_source(source_text, candidate):
+            return self._repair_spanish_residual_english(candidate)
+        return candidate
 
     async def _translate_once(
         self,
@@ -299,6 +402,57 @@ class TechnicalTranslationService:
             repaired = re.sub(pattern, replacement, repaired, flags=re.IGNORECASE)
         repaired = re.sub(r"\s+", " ", repaired).strip()
         return repaired
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        return bool(re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text or ""))
+
+    @classmethod
+    def _looks_non_spanish_output(cls, text: str) -> bool:
+        cleaned = cls._sanitize(text)
+        if not cleaned:
+            return False
+        if cls._contains_cjk(cleaned):
+            return True
+        words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", cleaned)
+        if len(words) < 4:
+            return False
+        lowered = [w.lower() for w in words]
+        english_hits = sum(1 for w in lowered if w in cls._ENGLISH_FUNCTION_WORDS)
+        spanish_hits = sum(1 for w in lowered if w in cls._SPANISH_FUNCTION_WORDS)
+        return english_hits >= (spanish_hits * 2 + 2)
+
+    @classmethod
+    def _looks_too_similar_to_source(cls, source_text: str, translated_text: str) -> bool:
+        source = cls._sanitize(source_text).lower()
+        translated = cls._sanitize(translated_text).lower()
+        if not source or not translated:
+            return False
+        source_words = re.findall(r"[a-z0-9áéíóúüñ]+", source)
+        translated_words = re.findall(r"[a-z0-9áéíóúüñ]+", translated)
+        if len(source_words) < 3 or len(translated_words) < 3:
+            return False
+        if cls._is_term_like_phrase(translated_words):
+            return False
+        spanish_hits = sum(1 for w in translated_words if w in cls._SPANISH_FUNCTION_WORDS)
+        if spanish_hits > 0:
+            return False
+        ratio = difflib.SequenceMatcher(None, " ".join(source_words), " ".join(translated_words), autojunk=False).ratio()
+        return ratio >= 0.72
+
+    @classmethod
+    def _is_term_like_phrase(cls, words: list[str]) -> bool:
+        if not words:
+            return False
+        for token in words:
+            if token in cls._TERM_LIKE_TOKENS:
+                continue
+            if re.search(r"\d", token):
+                continue
+            if re.fullmatch(r"[a-z]{1,2}", token):
+                continue
+            return False
+        return True
 
     async def _chat(self, user_prompt: str, system_prompt: Optional[str] = None) -> str:
         messages = []

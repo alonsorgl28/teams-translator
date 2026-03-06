@@ -217,6 +217,8 @@ class MeetingTranslatorController:
         self.source_language = (os.getenv("SOURCE_LANGUAGE") or "Auto-detect").strip() or "Auto-detect"
         self.target_language = (os.getenv("TARGET_LANGUAGE") or "Spanish").strip() or "Spanish"
         self.literal_complete_mode = read_bool_env("LITERAL_COMPLETE_MODE", False)
+        # Keep overlay language consistent by default: show only target-language output.
+        self.show_source_preview = read_bool_env("SHOW_SOURCE_PREVIEW", False)
         self.short_timestamps = read_bool_env("SHORT_TIMESTAMPS", True)
         default_audio_q = 24 if self.literal_complete_mode else 8
         default_text_q = 32 if self.literal_complete_mode else 10
@@ -239,6 +241,7 @@ class MeetingTranslatorController:
             # Overlap that is too aggressive can outpace API throughput and create stale drops.
             configured_chunk_step = max(configured_chunk_step, min(chunk_seconds, self.MIN_CHUNK_STEP_SECONDS_LIVE))
         self.realtime_transcription_enabled = read_bool_env("REALTIME_TRANSCRIPTION_ENABLED", False)
+        self.validate_api_key_on_start = read_bool_env("VALIDATE_API_KEY_ON_START", False)
         self.listener = SystemAudioListener(
             loop=self.loop,
             output_queue=self.audio_queue,
@@ -287,6 +290,7 @@ class MeetingTranslatorController:
         self.realtime_audio_task: Optional[asyncio.Task[None]] = None
         self._toggle_task: Optional[asyncio.Task[None]] = None
         self.debug_enabled = os.getenv("DEBUG_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+        self.log_rendered_segments = read_bool_env("LOG_RENDERED_SEGMENTS", False)
         self.filter_gibberish = read_bool_env("FILTER_GIBBERISH", True)
         self.latency_window: deque[float] = deque(maxlen=10)
         self.chunks_processed = 0
@@ -318,6 +322,7 @@ class MeetingTranslatorController:
         self._pending_source_fragment_count = 0
         self._source_preview_active = False
         self._using_realtime_transcription = False
+        self._api_key_validated = False
 
         self.ui.toggle_listening.connect(self._on_toggle_listening)
         self.ui.copy_requested.connect(self._on_copy_requested)
@@ -340,8 +345,9 @@ class MeetingTranslatorController:
             self.running = True
         try:
             self._ensure_services()
-            if self.transcriber is not None:
+            if self.transcriber is not None and self.validate_api_key_on_start and not self._api_key_validated:
                 await self.transcriber.validate_api_key()
+                self._api_key_validated = True
             self._clear_runtime_queues()
             self._last_rendered_normalized = ""
             self._recent_rendered_normalized.clear()
@@ -575,6 +581,8 @@ class MeetingTranslatorController:
                     continue
                 event = await self.realtime_transcriber.get_event()
                 if event.kind == "preview":
+                    if not self.show_source_preview:
+                        continue
                     preview_text = self._clean_transcription_noise(event.text)
                     if preview_text:
                         self._source_preview_active = True
@@ -856,7 +864,7 @@ class MeetingTranslatorController:
         return cleaned
 
     async def _handle_transcription_preview(self, preview_text: str) -> None:
-        if self.literal_complete_mode:
+        if self.literal_complete_mode or not self.show_source_preview:
             return
         cleaned = self._clean_transcription_noise(preview_text)
         if not cleaned:
@@ -1204,6 +1212,8 @@ class MeetingTranslatorController:
         rendered = f"[{self._format_timestamp(timestamp)}] {cleaned}"
         if self._is_duplicate_segment(rendered):
             return
+        if self.log_rendered_segments:
+            logging.info("segment_out source_lang=%s text=%s", source_language, cleaned)
         self.buffer.add(timestamp, rendered)
         if self.ui.save_session_enabled:
             self.saved_session_text.append(rendered)
@@ -1249,7 +1259,7 @@ class MeetingTranslatorController:
         self._emit_segment(pending, captured_at, language, self.last_api_time, pending_metrics)
 
     def _maybe_show_source_preview(self, source_text: str) -> None:
-        if self.literal_complete_mode:
+        if self.literal_complete_mode or not self.show_source_preview:
             return
         preview_text = self._normalize_fragment(source_text)
         if len(re.findall(r"\b\w+\b", preview_text)) < self.PROVISIONAL_PREVIEW_MIN_WORDS:
