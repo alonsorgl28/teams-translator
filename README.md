@@ -8,12 +8,6 @@ Loro es un MVP de escritorio que captura audio del sistema, lo transcribe, lo tr
 - Muestra subtítulos en vivo y permite exportar la transcripción traducida.
 - El modo técnico preserva números, unidades y acrónimos.
 
-## Requirements
-
-- Python 3.10+
-- VB-Cable (Windows) or BlackHole (macOS)
-- OpenAI API key
-
 ## Quick Start in 3 minutes
 
 ### Windows (VB-Cable)

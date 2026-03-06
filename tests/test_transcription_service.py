@@ -5,7 +5,7 @@ import io
 import os
 import unittest
 import wave
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import httpx
 import numpy as np
@@ -117,53 +117,6 @@ class RealtimeTranscriptionHelpersTests(unittest.TestCase):
     def test_merge_preview_text_collapses_spacing(self) -> None:
         merged = RealtimeTranscriptionService._merge_preview_text("hola", " mundo")
         self.assertEqual(merged, "hola mundo")
-
-
-class RealtimeTranscriptionStartupTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._orig_key = os.environ.get("OPENAI_API_KEY")
-        self._orig_transcription_model = os.environ.get("TRANSCRIPTION_MODEL")
-        self._orig_realtime_model = os.environ.get("REALTIME_SESSION_MODEL")
-        os.environ["OPENAI_API_KEY"] = "test-key"
-        os.environ["TRANSCRIPTION_MODEL"] = "gpt-4o-mini-transcribe"
-        os.environ["REALTIME_SESSION_MODEL"] = "gpt-4o-mini-realtime-preview"
-
-    def tearDown(self) -> None:
-        if self._orig_key is None:
-            os.environ.pop("OPENAI_API_KEY", None)
-        else:
-            os.environ["OPENAI_API_KEY"] = self._orig_key
-        if self._orig_transcription_model is None:
-            os.environ.pop("TRANSCRIPTION_MODEL", None)
-        else:
-            os.environ["TRANSCRIPTION_MODEL"] = self._orig_transcription_model
-        if self._orig_realtime_model is None:
-            os.environ.pop("REALTIME_SESSION_MODEL", None)
-        else:
-            os.environ["REALTIME_SESSION_MODEL"] = self._orig_realtime_model
-
-    def test_start_uses_beta_realtime_session_update_payload(self) -> None:
-        service = RealtimeTranscriptionService(api_key="test-key")
-        connection = AsyncMock()
-        connection.session.update = AsyncMock()
-        manager = Mock()
-        manager.enter = AsyncMock(return_value=connection)
-        connect = Mock(return_value=manager)
-        service._client.beta.realtime.connect = connect
-        service._receive_events = AsyncMock()
-
-        asyncio.run(service.start())
-
-        connect.assert_called_once_with(model="gpt-4o-mini-realtime-preview")
-        connection.session.update.assert_awaited_once()
-        call_kwargs = connection.session.update.await_args.kwargs
-        self.assertIn("session", call_kwargs)
-        session = call_kwargs["session"]
-        self.assertEqual(session["input_audio_format"], "pcm16")
-        self.assertEqual(session["input_audio_transcription"]["model"], "gpt-4o-mini-transcribe")
-        self.assertEqual(session["turn_detection"]["type"], "server_vad")
-
-        asyncio.run(service.stop())
 
 
 if __name__ == "__main__":

@@ -265,7 +265,7 @@ class RealtimeTranscriptionService:
                 model_name = self._models[model_index]
                 connection = None
                 try:
-                    connection = await self._client.beta.realtime.connect(model=session_model_name).enter()
+                    connection = await self._client.realtime.connect(model=session_model_name).enter()
                     transcription_config = {"model": model_name}
                     if self._language_hint:
                         transcription_config["language"] = self._language_hint
@@ -273,13 +273,18 @@ class RealtimeTranscriptionService:
                         transcription_config["prompt"] = self._base_prompt
                     await connection.session.update(
                         session={
-                            "input_audio_format": "pcm16",
-                            "input_audio_transcription": transcription_config,
-                            "turn_detection": {
-                                "type": "server_vad",
-                                "prefix_padding_ms": self._vad_prefix_padding_ms,
-                                "silence_duration_ms": self._vad_silence_duration_ms,
-                                "threshold": self._vad_threshold,
+                            "type": "transcription",
+                            "audio": {
+                                "input": {
+                                    "format": {"type": "audio/pcm", "rate": 24000},
+                                    "transcription": transcription_config,
+                                    "turn_detection": {
+                                        "type": "server_vad",
+                                        "prefix_padding_ms": self._vad_prefix_padding_ms,
+                                        "silence_duration_ms": self._vad_silence_duration_ms,
+                                        "threshold": self._vad_threshold,
+                                    },
+                                }
                             },
                         }
                     )
