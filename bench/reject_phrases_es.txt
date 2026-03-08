@@ -1,0 +1,22 @@
+# Frases/patrones inaceptables para EN->ES (rechazo automático)
+
+1) Mezcla de scripts no latinos en salida final.
+   Ejemplo: "El transformador está en good state 你好"
+   Regla: reject si contiene CJK/árabe/cirílico en commit.
+
+2) Salida mayoritariamente en inglés cuando target=es.
+   Ejemplo: "the transformer differential protection is very important"
+   Regla: reject si english_function_words >= (spanish_function_words * 2 + 2).
+
+3) Respuestas de rechazo del modelo.
+   Ejemplo: "Lo siento, no puedo ayudar con eso."
+   Regla: reject inmediato y forzar retraducción premium 1 vez.
+
+4) Segmento final de una sola palabra no técnica.
+   Ejemplo: "bueno" / "and" / "yes"
+   Regla: reject si commit tiene 1 palabra y no está en lista técnica protegida.
+
+5) Texto incomprensible/fonético sin sentido.
+   Ejemplo: "verlet kod ex" / "xqtrn blst"
+   Regla: reject por low semantic score + unstable sequence.
+

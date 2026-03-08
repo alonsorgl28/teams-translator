@@ -1,0 +1,41 @@
+tests:
+  - test_id: T01
+    audio_tipo: english_clear_normal
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=qjY31x0m3d8"
+  - test_id: T02
+    audio_tipo: english_fast
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=3rGTQm3lxQk"
+  - test_id: T03
+    audio_tipo: strong_accent_noise
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=N0sS4U3EAkU"
+  - test_id: T04
+    audio_tipo: long_technical_phrases
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=nBZGn-3D8Xc"
+  - test_id: T05
+    audio_tipo: proper_names_brands
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=08mwXICY4JM"
+  - test_id: T06
+    audio_tipo: numbers_units
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=p4fXV8FwmLY"
+  - test_id: T07
+    audio_tipo: short_pauses_overlap
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=9L0CDjcI3TA"
+  - test_id: T08
+    audio_tipo: youtube_subtitles_reference
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=7Q-aVBv7PWM"
+  - test_id: T09
+    audio_tipo: light_background_music
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=79Lm8C7AdL4"
+  - test_id: T10
+    audio_tipo: benchmark_regression_mix
+    duration_min: 10
+    url: "https://www.youtube.com/watch?v=7tilesfCly4"

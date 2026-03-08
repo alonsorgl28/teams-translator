@@ -90,6 +90,39 @@ class LooksSpanishTests(unittest.TestCase):
             )
         )
 
+    def test_select_route_uses_premium_for_low_confidence_when_ratio_allows(self) -> None:
+        service = object.__new__(TechnicalTranslationService)
+        service._premium_model = "gpt-4o"
+        service._premium_trigger_score = 0.82
+        service._premium_max_ratio = 0.25
+        service._segments_routed = 4
+        service._premium_segments = 0
+        route = service._select_route(0.4, force_premium=False)
+        self.assertEqual(route, "premium")
+
+    def test_select_route_blocks_premium_when_ratio_reached(self) -> None:
+        service = object.__new__(TechnicalTranslationService)
+        service._premium_model = "gpt-4o"
+        service._premium_trigger_score = 0.82
+        service._premium_max_ratio = 0.25
+        service._segments_routed = 4
+        service._premium_segments = 1
+        route = service._select_route(0.3, force_premium=False)
+        self.assertEqual(route, "normal")
+
+    def test_apply_domain_glossary_replaces_matched_terms_for_spanish(self) -> None:
+        output = TechnicalTranslationService._apply_domain_glossary(
+            source_text="Check the insulator and bushing in the transformer",
+            translated_text="Verifica el insulator y el bushing del transformador",
+            target_language="Spanish",
+            domain_glossary=[
+                {"term_en": "insulator", "term_es": "aislador", "rule": "translate"},
+                {"term_en": "bushing", "term_es": "boquilla", "rule": "translate"},
+            ],
+        )
+        self.assertIn("aislador", output)
+        self.assertIn("boquilla", output)
+
 
 if __name__ == "__main__":
     unittest.main()

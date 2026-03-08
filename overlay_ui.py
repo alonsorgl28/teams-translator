@@ -331,16 +331,23 @@ class OverlayWindow(QWidget):
         self._subtitle_update_ms = read_int_env("SUBTITLE_UPDATE_MS", 300)
         self._subtitle_show_previous = read_bool_env("SUBTITLE_SHOW_PREVIOUS_LINE", True)
         self._overlay_show_timestamps = read_bool_env("OVERLAY_SHOW_TIMESTAMPS", False)
+        self._subtitle_preview_reveal_enabled = read_bool_env("SUBTITLE_PREVIEW_REVEAL_ENABLED", True)
+        self._subtitle_preview_reveal_interval_ms = read_int_env("SUBTITLE_PREVIEW_REVEAL_INTERVAL_MS", 70)
+        self._subtitle_preview_reveal_words_per_tick = read_int_env("SUBTITLE_PREVIEW_REVEAL_WORDS_PER_TICK", 1)
 
         self._cinema_pending_text: list[str] = []
         self._subtitle_prev_text = ""
         self._subtitle_curr_text = ""
         self._subtitle_preview_text = ""
+        self._subtitle_preview_target_words: list[str] = []
+        self._subtitle_preview_visible_words = 0
         self._last_subtitle_norm = ""
 
         self._display_timer = QTimer(self)
         self._display_timer.setSingleShot(True)
         self._display_timer.timeout.connect(self._flush_cinema_text)
+        self._preview_reveal_timer = QTimer(self)
+        self._preview_reveal_timer.timeout.connect(self._advance_preview_reveal)
 
         self._build_ui()
         self._apply_window_style()
@@ -410,6 +417,9 @@ class OverlayWindow(QWidget):
         cleaned = self._strip_timestamp((text or "").strip())
         if not cleaned:
             return
+        if self._subtitle_preview_reveal_enabled:
+            self._set_live_preview_progressive(cleaned)
+            return
         wrapped = self._wrap_subtitle_lines(cleaned)
         norm = self._normalize_for_compare(wrapped)
         if not norm:
@@ -418,9 +428,63 @@ class OverlayWindow(QWidget):
         self._paint_live_subtitles()
 
     def clear_live_preview(self) -> None:
+        self._preview_reveal_timer.stop()
+        self._subtitle_preview_target_words = []
+        self._subtitle_preview_visible_words = 0
         if not self._subtitle_preview_text:
             return
         self._subtitle_preview_text = ""
+        self._paint_live_subtitles()
+
+    def _set_live_preview_progressive(self, text: str) -> None:
+        words = text.split()
+        if not words:
+            return
+        target_norm = self._normalize_for_compare(" ".join(words))
+        current_norm = self._normalize_for_compare(" ".join(self._subtitle_preview_target_words))
+        if target_norm == current_norm:
+            return
+
+        current_visible_words = (
+            self._subtitle_preview_target_words[: self._subtitle_preview_visible_words]
+            if self._subtitle_preview_target_words and self._subtitle_preview_visible_words > 0
+            else []
+        )
+        if current_visible_words and words[: len(current_visible_words)] == current_visible_words:
+            self._subtitle_preview_visible_words = len(current_visible_words)
+        else:
+            self._subtitle_preview_visible_words = min(2, len(words))
+
+        self._subtitle_preview_target_words = words
+        self._apply_preview_words()
+        if self._subtitle_preview_visible_words < len(self._subtitle_preview_target_words):
+            self._preview_reveal_timer.start(max(18, self._subtitle_preview_reveal_interval_ms))
+        else:
+            self._preview_reveal_timer.stop()
+
+    def _advance_preview_reveal(self) -> None:
+        if not self._subtitle_preview_target_words:
+            self._preview_reveal_timer.stop()
+            return
+        self._subtitle_preview_visible_words = min(
+            len(self._subtitle_preview_target_words),
+            self._subtitle_preview_visible_words + max(1, self._subtitle_preview_reveal_words_per_tick),
+        )
+        self._apply_preview_words()
+        if self._subtitle_preview_visible_words >= len(self._subtitle_preview_target_words):
+            self._preview_reveal_timer.stop()
+
+    def _apply_preview_words(self) -> None:
+        if not self._subtitle_preview_target_words:
+            return
+        visible = self._subtitle_preview_target_words[: self._subtitle_preview_visible_words]
+        if not visible:
+            return
+        wrapped = self._wrap_subtitle_lines(" ".join(visible))
+        norm = self._normalize_for_compare(wrapped)
+        if not norm:
+            return
+        self._subtitle_preview_text = wrapped
         self._paint_live_subtitles()
 
     def set_debug_mode(self, enabled: bool) -> None:
@@ -1103,9 +1167,12 @@ class OverlayWindow(QWidget):
         self.subtitle_curr_label.style().polish(self.subtitle_curr_label)
 
     def _reset_live_subtitles(self) -> None:
+        self._preview_reveal_timer.stop()
         self._subtitle_prev_text = ""
         self._subtitle_curr_text = ""
         self._subtitle_preview_text = ""
+        self._subtitle_preview_target_words = []
+        self._subtitle_preview_visible_words = 0
         self._last_subtitle_norm = ""
         self.subtitle_prev_label.clear()
         self.subtitle_curr_label.clear()

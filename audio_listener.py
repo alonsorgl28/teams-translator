@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import platform
 import threading
+import time
 import wave
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,7 +14,7 @@ from typing import Optional
 import numpy as np
 import sounddevice as sd
 
-from config_utils import read_float_env
+from config_utils import read_bool_env, read_float_env, read_int_env
 
 
 @dataclass
@@ -57,6 +59,15 @@ class SystemAudioListener:
         self._buffer_lock = threading.Lock()
         max_buffer_seconds = read_float_env("AUDIO_MAX_BUFFER_SECONDS", 12.0)
         self._max_buffer_frames = max(1, int(self._sample_rate * max_buffer_seconds))
+        self._silence_filter_enabled = read_bool_env("AUDIO_SILENCE_FILTER_ENABLED", True)
+        self._min_chunk_rms = read_float_env("AUDIO_MIN_CHUNK_RMS", 0.0035)
+        self._min_chunk_peak = read_float_env("AUDIO_MIN_CHUNK_PEAK", 0.012)
+        self._speech_hold_chunks = max(0, read_int_env("AUDIO_SPEECH_HOLD_CHUNKS", 1))
+        self._speech_hold_remaining = 0
+        self._replay_audio_path = (os.getenv("REPLAY_AUDIO_PATH") or "").strip()
+        self._replay_speed = max(0.05, read_float_env("REPLAY_SPEED", 1.0))
+        self._replay_frame_seconds = max(0.02, read_float_env("REPLAY_FRAME_SECONDS", 0.04))
+        self._replay_thread: Optional[threading.Thread] = None
         self._running = False
 
     @property
@@ -74,6 +85,12 @@ class SystemAudioListener:
 
     def start(self) -> None:
         if self._running:
+            return
+
+        if self._replay_audio_path:
+            self._running = True
+            self._replay_thread = threading.Thread(target=self._replay_worker, name="loro-audio-replay", daemon=True)
+            self._replay_thread.start()
             return
 
         device = self._resolve_input_device()
@@ -96,6 +113,9 @@ class SystemAudioListener:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        if self._replay_thread is not None and self._replay_thread.is_alive() and threading.current_thread() is not self._replay_thread:
+            self._replay_thread.join(timeout=1.0)
+        self._replay_thread = None
         with self._buffer_lock:
             self._buffer = np.empty((0,), dtype=np.float32)
 
@@ -135,6 +155,8 @@ class SystemAudioListener:
     def _publish_chunk(self, raw_chunk: np.ndarray, captured_at: datetime) -> None:
         if self._output_queue is None:
             return
+        if self._should_skip_silent_chunk(raw_chunk):
+            return
         wav_bytes = self._to_wav_bytes(raw_chunk)
         chunk = AudioChunk(
             captured_at=captured_at,
@@ -155,6 +177,22 @@ class SystemAudioListener:
                 # Lossless mode: enqueue asynchronously instead of dropping audio.
                 self._loop.create_task(self._output_queue.put(chunk))
 
+    def _should_skip_silent_chunk(self, raw_chunk: np.ndarray) -> bool:
+        if not self._silence_filter_enabled:
+            return False
+        if raw_chunk.size == 0:
+            return True
+
+        rms = float(np.sqrt(np.mean(np.square(raw_chunk, dtype=np.float64))))
+        peak = float(np.max(np.abs(raw_chunk)))
+        if rms >= self._min_chunk_rms or peak >= self._min_chunk_peak:
+            self._speech_hold_remaining = self._speech_hold_chunks
+            return False
+        if self._speech_hold_remaining > 0:
+            self._speech_hold_remaining -= 1
+            return False
+        return True
+
     def _publish_stream_frame(self, raw_chunk: np.ndarray, captured_at: datetime) -> None:
         if self._stream_output_queue is None:
             return
@@ -171,6 +209,57 @@ class SystemAudioListener:
             except asyncio.QueueEmpty:
                 return
             self._stream_output_queue.put_nowait(frame)
+
+    def _replay_worker(self) -> None:
+        try:
+            with wave.open(self._replay_audio_path, "rb") as handle:
+                sample_rate = int(handle.getframerate())
+                channels = int(handle.getnchannels())
+                sample_width = int(handle.getsampwidth())
+                frame_count = max(1, int(sample_rate * self._replay_frame_seconds))
+                while self._running:
+                    raw_frames = handle.readframes(frame_count)
+                    if not raw_frames:
+                        break
+                    mono = self._frames_to_mono(raw_frames, sample_width=sample_width, channels=channels)
+                    if mono.size == 0:
+                        continue
+                    mono = self._resample_if_needed(mono, source_rate=sample_rate)
+                    if mono.size == 0:
+                        continue
+                    block = mono.reshape(-1, 1)
+                    self._audio_callback(block, frames=block.shape[0], time_info=None, status=None)
+                    sleep_s = (block.shape[0] / max(1, self._sample_rate)) / self._replay_speed
+                    time.sleep(max(0.0, sleep_s))
+        finally:
+            self._running = False
+
+    @staticmethod
+    def _frames_to_mono(raw_frames: bytes, *, sample_width: int, channels: int) -> np.ndarray:
+        if sample_width == 2:
+            data = np.frombuffer(raw_frames, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sample_width == 4:
+            data = np.frombuffer(raw_frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+        elif sample_width == 1:
+            data = (np.frombuffer(raw_frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        else:
+            return np.empty((0,), dtype=np.float32)
+        if channels > 1:
+            frames = data.size // channels
+            if frames <= 0:
+                return np.empty((0,), dtype=np.float32)
+            data = data[: frames * channels].reshape(frames, channels).mean(axis=1)
+        return data.astype(np.float32, copy=False)
+
+    def _resample_if_needed(self, samples: np.ndarray, *, source_rate: int) -> np.ndarray:
+        if source_rate == self._sample_rate or samples.size == 0:
+            return samples
+        duration_s = samples.size / max(1, source_rate)
+        target_size = max(1, int(duration_s * self._sample_rate))
+        source_x = np.linspace(0.0, 1.0, num=samples.size, endpoint=False)
+        target_x = np.linspace(0.0, 1.0, num=target_size, endpoint=False)
+        resampled = np.interp(target_x, source_x, samples)
+        return resampled.astype(np.float32)
 
     def _resolve_input_device(self) -> Optional[str]:
         if self._preferred_device:

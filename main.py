@@ -34,6 +34,9 @@ from audio_listener import AudioChunk, StreamingAudioFrame, SystemAudioListener
 from config_utils import read_bool_env, read_float_env, read_int_env
 from metrics_reporter import SessionMetricsReporter
 from overlay_ui import OverlayWindow
+from replay_logger import ReplayEventLogger
+from replay_tools import FixtureSpec, SubtitleCue, load_replay_manifest, load_subtitle_cues, match_reference_cue
+from segment_quality import SegmentQualityGate, TranslationRoute
 from transcription_service import RealtimeTranscriptionEvent, RealtimeTranscriptionService, WhisperTranscriptionService
 from translation_service import TechnicalTranslationService
 
@@ -149,9 +152,9 @@ class MeetingTranslatorController:
     RECENT_RENDERED_MAXLEN = 5
     DUPLICATE_SEQUENCE_RATIO = 0.995
     DUPLICATE_MAX_WORD_DELTA = 0
-    MIN_WORDS_ON_AGE_FLUSH = 2
+    MIN_WORDS_ON_AGE_FLUSH = 3
     STALE_EMIT_RELAX_FACTOR = 2.0
-    FIRST_EMIT_MIN_CHARS = 4
+    FIRST_EMIT_MIN_CHARS = 12
     MIN_STALENESS_SECONDS_LIVE = 6.0
     MIN_CHUNK_STEP_SECONDS_LIVE = 0.85
     MAX_CHUNK_SECONDS_LIVE = 1.0
@@ -195,6 +198,67 @@ class MeetingTranslatorController:
         "un",
         "una",
     }
+    ENGLISH_FUNCTION_WORDS = {
+        "the",
+        "and",
+        "or",
+        "with",
+        "for",
+        "to",
+        "of",
+        "in",
+        "on",
+        "is",
+        "are",
+        "was",
+        "were",
+        "this",
+        "that",
+        "it",
+        "you",
+        "we",
+        "they",
+        "i",
+    }
+    SPANISH_FUNCTION_WORDS = {
+        "el",
+        "la",
+        "los",
+        "las",
+        "de",
+        "del",
+        "y",
+        "con",
+        "para",
+        "en",
+        "que",
+        "es",
+        "un",
+        "una",
+        "por",
+        "se",
+        "como",
+        "pero",
+        "muy",
+        "más",
+        "menos",
+        "hola",
+        "gracias",
+        "sí",
+        "no",
+        "bueno",
+        "buena",
+        "buen",
+    }
+    GENERIC_SPANISH_NOISE_PHRASES = (
+        "hola mundo",
+        "el gato es negro",
+        "esto es una prueba",
+        "estoy bien",
+        "lo siento",
+        "hasta pronto",
+        "gracias por ver",
+    )
 
     SUPPORTED_LANG_CODES = {
         "en",
@@ -229,7 +293,7 @@ class MeetingTranslatorController:
             maxsize=read_int_env("STREAM_AUDIO_QUEUE_MAXSIZE", 96)
         )
         self.text_queue: asyncio.Queue[
-            tuple[AudioChunk, str, str, float, datetime, datetime]
+            tuple[AudioChunk, str, str, str, float, datetime, datetime]
         ] = asyncio.Queue(maxsize=read_int_env("TEXT_QUEUE_MAXSIZE", default_text_q))
         default_chunk_seconds = 1.8 if self.literal_complete_mode else 1.6
         chunk_seconds = read_float_env("CHUNK_SECONDS", default_chunk_seconds)
@@ -265,6 +329,55 @@ class MeetingTranslatorController:
             "MAX_PENDING_RENDER_AGE_SECONDS",
             2.2 if self.literal_complete_mode else 1.0,
         )
+        self.emit_min_interval_seconds = read_float_env(
+            "EMIT_MIN_INTERVAL_SECONDS",
+            0.55 if not self.literal_complete_mode else 0.35,
+        )
+        self.emit_min_chars = read_int_env("EMIT_MIN_CHARS", 56 if not self.literal_complete_mode else 40)
+        self.MIN_WORDS_ON_AGE_FLUSH = read_int_env("MIN_WORDS_ON_AGE_FLUSH", self.MIN_WORDS_ON_AGE_FLUSH)
+        self.PROVISIONAL_PREVIEW_MIN_WORDS = read_int_env(
+            "PROVISIONAL_PREVIEW_MIN_WORDS",
+            self.PROVISIONAL_PREVIEW_MIN_WORDS,
+        )
+        self.SOURCE_TRANSLATION_MIN_WORDS = read_int_env(
+            "SOURCE_TRANSLATION_MIN_WORDS",
+            self.SOURCE_TRANSLATION_MIN_WORDS,
+        )
+        self.SOURCE_TRANSLATION_MIN_CHARS = read_int_env(
+            "SOURCE_TRANSLATION_MIN_CHARS",
+            self.SOURCE_TRANSLATION_MIN_CHARS,
+        )
+        self.SOURCE_TRANSLATION_MAX_AGE_SECONDS = read_float_env(
+            "SOURCE_TRANSLATION_MAX_AGE_SECONDS",
+            self.SOURCE_TRANSLATION_MAX_AGE_SECONDS,
+        )
+        self.SOURCE_TRANSLATION_FIRST_AGE_SECONDS = read_float_env(
+            "SOURCE_TRANSLATION_FIRST_AGE_SECONDS",
+            self.SOURCE_TRANSLATION_FIRST_AGE_SECONDS,
+        )
+        self.SOURCE_TRANSLATION_BACKLOG_MIN_WORDS = read_int_env(
+            "SOURCE_TRANSLATION_BACKLOG_MIN_WORDS",
+            self.SOURCE_TRANSLATION_BACKLOG_MIN_WORDS,
+        )
+        self.SOURCE_TRANSLATION_FORCE_AFTER_FRAGMENTS = read_int_env(
+            "SOURCE_TRANSLATION_FORCE_AFTER_FRAGMENTS",
+            self.SOURCE_TRANSLATION_FORCE_AFTER_FRAGMENTS,
+        )
+        self.SOURCE_TRANSLATION_FORCE_FRAGMENT_MIN_WORDS = read_int_env(
+            "SOURCE_TRANSLATION_FORCE_FRAGMENT_MIN_WORDS",
+            self.SOURCE_TRANSLATION_FORCE_FRAGMENT_MIN_WORDS,
+        )
+        self.strict_en_es_source_guard = read_bool_env("STRICT_EN_ES_SOURCE_GUARD", True)
+        self.source_strict_min_words = read_int_env("SOURCE_STRICT_MIN_WORDS", 6)
+        self.source_strict_max_wait_seconds = read_float_env("SOURCE_STRICT_MAX_WAIT_SECONDS", 1.15)
+        self.segment_quality = SegmentQualityGate()
+        self.dual_pass_enabled = self.segment_quality.dual_pass_enabled
+        self.preview_min_words = self.segment_quality.preview_min_words
+        self.preview_max_age_seconds = self.segment_quality.preview_max_age_seconds
+        self.commit_min_words = self.segment_quality.commit_min_words
+        self.commit_max_age_seconds = self.segment_quality.commit_max_age_seconds
+        self.preview_drop_backlog_threshold = read_int_env("PREVIEW_DROP_BACKLOG_THRESHOLD", 1)
+        self.benchmark_test_id = (os.getenv("BENCHMARK_TEST_ID") or "").strip()
         configured_staleness = read_float_env(
             "MAX_SEGMENT_STALENESS_SECONDS",
             8.0 if self.literal_complete_mode else 6.0,
@@ -308,6 +421,24 @@ class MeetingTranslatorController:
             summary_path=os.getenv("METRICS_SUMMARY_PATH", "./reports/session_summary.json"),
             append_mode=read_bool_env("METRICS_APPEND_MODE", False),
         )
+        self.replay_fixture_id = (
+            (os.getenv("REPLAY_FIXTURE_ID") or "").strip()
+            or self.benchmark_test_id
+            or "live_manual"
+        )
+        self.replay_audio_path = (os.getenv("REPLAY_AUDIO_PATH") or "").strip()
+        self.replay_manifest_path = Path(os.getenv("REPLAY_MANIFEST_PATH", "./bench/replay_manifest.yaml"))
+        self.replay_events_enabled = read_bool_env("REPLAY_EVENTS_ENABLED", True)
+        self.replay_auto_start = read_bool_env("REPLAY_AUTO_START", bool(self.replay_audio_path))
+        self.replay_auto_stop_on_complete = read_bool_env("REPLAY_AUTO_STOP_ON_COMPLETE", True)
+        self.replay_auto_exit_on_complete = read_bool_env("REPLAY_AUTO_EXIT_ON_COMPLETE", False)
+        self.replay_logger = ReplayEventLogger(
+            enabled=self.replay_events_enabled,
+            output_path=os.getenv("REPLAY_EVENTS_PATH", "./reports/replay_events.jsonl"),
+        )
+        self._fixture_specs = load_replay_manifest(self.replay_manifest_path)
+        self._fixture_spec: Optional[FixtureSpec] = self._fixture_specs.get(self.replay_fixture_id)
+        self._reference_cues: list[SubtitleCue] = self._load_reference_cues()
         self._last_rendered_normalized = ""
         self._recent_rendered_normalized: deque[str] = deque(maxlen=self.RECENT_RENDERED_MAXLEN)
         self._last_source_text = ""
@@ -316,13 +447,23 @@ class MeetingTranslatorController:
         self._pending_captured_at: Optional[datetime] = None
         self._pending_metrics_data: Optional[dict[str, Any]] = None
         self._pending_source_text = ""
+        self._pending_source_raw_text = ""
         self._pending_source_captured_at: Optional[datetime] = None
         self._pending_source_language = "auto"
         self._pending_source_metrics_data: Optional[dict[str, Any]] = None
         self._pending_source_fragment_count = 0
+        self._pending_render_revision = 0
         self._source_preview_active = False
         self._using_realtime_transcription = False
+        self._last_emit_at: Optional[datetime] = None
+        self._last_preview_at: Optional[datetime] = None
+        self._last_preview_text = ""
         self._api_key_validated = False
+        self._session_anchor_at = datetime.now()
+        self._replay_completion_handled = False
+        self._replay_completion_timer = QTimer(ui)
+        self._replay_completion_timer.setInterval(250)
+        self._replay_completion_timer.timeout.connect(self._check_replay_completion)
 
         self.ui.toggle_listening.connect(self._on_toggle_listening)
         self.ui.copy_requested.connect(self._on_copy_requested)
@@ -337,6 +478,14 @@ class MeetingTranslatorController:
         self.ui.set_status(
             f"Idle. Target language: {self.target_language}. Select VB-Cable/BlackHole as system output."
         )
+        if self.replay_auto_start:
+            QTimer.singleShot(150, self._auto_start_replay_session)
+
+    def _auto_start_replay_session(self) -> None:
+        if self.running or (self._toggle_task and not self._toggle_task.done()):
+            return
+        self.ui.set_listening(True)
+        self._schedule_toggle(True)
 
     async def start(self) -> None:
         async with self._running_lock:
@@ -358,8 +507,17 @@ class MeetingTranslatorController:
             self.translation_fallbacks = 0
             self._pending_metrics_data = None
             self._reset_pending_source_buffer()
+            self._pending_render_revision = 0
             self._source_preview_active = False
             self._using_realtime_transcription = False
+            self._last_emit_at = None
+            self._last_preview_at = None
+            self._last_preview_text = ""
+            self._session_anchor_at = datetime.now()
+            self._replay_completion_handled = False
+            self._fixture_specs = load_replay_manifest(self.replay_manifest_path)
+            self._fixture_spec = self._fixture_specs.get(self.replay_fixture_id)
+            self._reference_cues = self._load_reference_cues()
             if self.transcriber is not None:
                 self.transcriber.reset_context()
             if self.translator is not None and hasattr(self.translator, "reset_context"):
@@ -373,7 +531,10 @@ class MeetingTranslatorController:
                     logging.warning("Realtime transcription unavailable, falling back to batch: %s", exc)
                     self._using_realtime_transcription = False
             self.metrics_reporter.start_session()
+            self.replay_logger.start_session(self.replay_fixture_id, started_at=self._session_anchor_at)
             self.listener.start()
+            if self.replay_audio_path:
+                self._replay_completion_timer.start()
         except Exception as exc:  # noqa: BLE001 - service startup boundary
             async with self._running_lock:
                 self.running = False
@@ -431,6 +592,7 @@ class MeetingTranslatorController:
                 self.ui.set_listening(False)
                 return
             self.running = False
+        self._replay_completion_timer.stop()
         self.listener.stop()
 
         for task in (self.transcribe_task, self.translate_task, self.realtime_audio_task):
@@ -451,6 +613,8 @@ class MeetingTranslatorController:
         self._clear_runtime_queues()
         self._reset_pending_source_buffer()
         self._source_preview_active = False
+        self._last_preview_at = None
+        self._last_preview_text = ""
         self.ui.clear_live_preview()
         summary = self.metrics_reporter.finalize_session()
         if self.debug_enabled and summary:
@@ -460,6 +624,7 @@ class MeetingTranslatorController:
         self.ui.set_status("Stopped.")
 
     def shutdown_sync(self) -> None:
+        self._replay_completion_timer.stop()
         self.listener.stop()
         self.metrics_reporter.finalize_session()
         self._clear_runtime_queues()
@@ -511,14 +676,27 @@ class MeetingTranslatorController:
                         transcription_time,
                     )
 
-                source_text = self._sanitize_transcribed_text(transcribed.text)
+                source_text = self._sanitize_transcribed_text(
+                    transcribed.text,
+                    source_language=transcribed.language or "auto",
+                )
                 if not source_text:
                     continue
+                self._record_replay_asr_event(
+                    source_text_raw=transcribed.text,
+                    source_text_sanitized=source_text,
+                    asr_stage="stable",
+                    captured_at=chunk.captured_at,
+                    duration_s=chunk.duration_s,
+                    source_language=transcribed.language or "auto",
+                    latency_s=transcription_time,
+                )
                 self._maybe_show_source_preview(source_text)
 
                 await self._enqueue_translation_item(
                     chunk=chunk,
                     source_text=source_text,
+                    source_text_raw=transcribed.text,
                     source_language=transcribed.language or "auto",
                     transcription_time=transcription_time,
                     transcription_start_ts=transcription_start_ts,
@@ -600,9 +778,21 @@ class MeetingTranslatorController:
                     break
                 if event.kind != "final":
                     continue
-                source_text = self._sanitize_transcribed_text(event.text)
+                source_text = self._sanitize_transcribed_text(
+                    event.text,
+                    source_language=event.language or "auto",
+                )
                 if not source_text:
                     continue
+                self._record_replay_asr_event(
+                    source_text_raw=event.text,
+                    source_text_sanitized=source_text,
+                    asr_stage="stable",
+                    captured_at=event.captured_at,
+                    duration_s=0.0,
+                    source_language=event.language or "auto",
+                    latency_s=event.latency_s,
+                )
                 chunk = AudioChunk(
                     captured_at=event.captured_at,
                     duration_s=0.0,
@@ -613,6 +803,7 @@ class MeetingTranslatorController:
                 await self._enqueue_translation_item(
                     chunk=chunk,
                     source_text=source_text,
+                    source_text_raw=event.text,
                     source_language=event.language or "auto",
                     transcription_time=event.latency_s,
                     transcription_start_ts=transcription_start_ts,
@@ -668,6 +859,7 @@ class MeetingTranslatorController:
                 (
                     chunk,
                     source_text,
+                    source_text_raw,
                     source_language,
                     transcription_time,
                     transcription_start_ts,
@@ -682,6 +874,7 @@ class MeetingTranslatorController:
                             (
                                 chunk,
                                 source_text,
+                                source_text_raw,
                                 source_language,
                                 transcription_time,
                                 transcription_start_ts,
@@ -698,6 +891,7 @@ class MeetingTranslatorController:
 
                 source_metrics = {
                     "captured_at": chunk.captured_at,
+                    "audio_duration_s": chunk.duration_s,
                     "source_language": source_language,
                     "transcription_start_ts": transcription_start_ts,
                     "transcription_end_ts": transcription_end_ts,
@@ -709,6 +903,15 @@ class MeetingTranslatorController:
                     "text_backlog": backlog,
                     "had_fallback": False,
                     "fallback_reason": "",
+                    "segment_stage": "preview",
+                    "route": "normal",
+                    "semantic_score": 0.0,
+                    "language_guard_triggered": False,
+                    "dropped_reason": "",
+                    "fixture_id": self.replay_fixture_id,
+                    "source_text_raw": source_text_raw,
+                    "source_text_sanitized": source_text,
+                    "source_text": source_text,
                 }
                 self._buffer_source_fragment(
                     source_text,
@@ -727,24 +930,70 @@ class MeetingTranslatorController:
                 if pending_source is None:
                     continue
 
-                source_text, source_language, source_metrics = pending_source
+                source_text, source_text_raw, source_language, source_metrics = pending_source
+                source_metrics["source_text_raw"] = source_text_raw
+                source_metrics["source_text_sanitized"] = source_text
                 started = perf_counter()
                 translation_start_ts = datetime.now()
-                translated = await self.translator.translate_text(  # type: ignore[union-attr]
+                confidence_score = self.segment_quality.confidence_from_source(source_text)
+                translated, route = await self.translator.translate_text_with_route(  # type: ignore[union-attr]
                     source_text,
                     target_language=self.target_language,
+                    confidence_score=confidence_score,
                 )
                 fallback_reason = self.translator.last_error or ""  # type: ignore[union-attr]
+                pending_age_s = (datetime.now() - source_metrics["captured_at"]).total_seconds()
+                decision = self.segment_quality.decide_commit(
+                    source_text=source_text,
+                    translated_text=translated,
+                    target_language=self.target_language,
+                    route=route,
+                    pending_age_s=pending_age_s,
+                )
+                if (
+                    decision.stage == "drop"
+                    and decision.dropped_reason in {"semantic_low", "language_guard"}
+                    and route == "normal"
+                ):
+                    retry_translated, retry_route = await self.translator.translate_text_with_route(  # type: ignore[union-attr]
+                        source_text,
+                        target_language=self.target_language,
+                        confidence_score=0.0,
+                        force_premium=True,
+                    )
+                    if retry_route == "premium":
+                        route = retry_route
+                        translated = retry_translated
+                        pending_age_s = (datetime.now() - source_metrics["captured_at"]).total_seconds()
+                        decision = self.segment_quality.decide_commit(
+                            source_text=source_text,
+                            translated_text=translated,
+                            target_language=self.target_language,
+                            route=route,
+                            pending_age_s=pending_age_s,
+                        )
+                    retry_fallback_reason = self.translator.last_error or ""  # type: ignore[union-attr]
+                    if retry_fallback_reason:
+                        if fallback_reason:
+                            fallback_reason = f"{fallback_reason};{retry_fallback_reason}"
+                        else:
+                            fallback_reason = retry_fallback_reason
+                translation_time = perf_counter() - started
                 if fallback_reason:
                     self.translation_fallbacks += 1
                     if self.debug_enabled:
                         logging.warning("debug_translation_fallback reason=%s", fallback_reason)
                 translation_end_ts = datetime.now()
-                translation_time = perf_counter() - started
                 source_metrics = dict(source_metrics)
                 source_metrics["translation_start_ts"] = translation_start_ts
                 source_metrics["translation_end_ts"] = translation_end_ts
                 source_metrics["translation_time_s"] = translation_time
+                source_metrics["source_text"] = source_text
+                source_metrics["translated_text_raw"] = translated
+                source_metrics["route"] = route
+                source_metrics["semantic_score"] = decision.semantic_score
+                source_metrics["language_guard_triggered"] = decision.language_guard_triggered
+                source_metrics["dropped_reason"] = decision.dropped_reason
                 source_metrics["had_fallback"] = bool(fallback_reason)
                 source_metrics["fallback_reason"] = fallback_reason
                 if self.debug_enabled:
@@ -759,9 +1008,21 @@ class MeetingTranslatorController:
                         float(source_metrics["transcription_time_s"]),
                         translation_time,
                     )
+                hard_drop_reasons = {"language_guard", "semantic_low", "commit_empty", "reject_phrase"}
+                if decision.stage == "drop" and decision.dropped_reason in hard_drop_reasons:
+                    source_metrics["segment_stage"] = "drop"
+                    source_metrics["route"] = "drop"
+                    source_metrics["had_fallback"] = True
+                    source_metrics["fallback_reason"] = source_metrics["fallback_reason"] or f"dropped:{decision.dropped_reason}"
+                    self._record_drop_metrics(source_metrics)
+                    self.last_api_time = float(source_metrics["transcription_time_s"]) + translation_time
+                    if self.debug_enabled:
+                        self._update_debug_panel(language=source_language, api_time=self.last_api_time)
+                    continue
 
+                translated_for_buffer = decision.text if decision.stage == "commit" else translated
                 emitted = self._buffer_or_emit_translation(
-                    translated=translated,
+                    translated=translated_for_buffer,
                     chunk_captured_at=source_metrics["captured_at"],
                     source_language=source_language,
                     api_time=float(source_metrics["transcription_time_s"]) + translation_time,
@@ -816,11 +1077,96 @@ class MeetingTranslatorController:
             return self.stream_audio_queue.qsize()
         return self.audio_queue.qsize()
 
+    def _load_reference_cues(self) -> list[SubtitleCue]:
+        if self._fixture_spec is None:
+            return []
+        caption_path = (self._fixture_spec.reference_caption_path or "").strip()
+        if not caption_path:
+            return []
+        return load_subtitle_cues(Path(caption_path))
+
+    def _relative_seconds(self, value: datetime) -> float:
+        return max(0.0, (value - self._session_anchor_at).total_seconds())
+
+    def _audio_window(self, captured_at: datetime, duration_s: float) -> tuple[float, float]:
+        audio_t0 = self._relative_seconds(captured_at)
+        audio_t1 = audio_t0 + max(0.0, duration_s)
+        return audio_t0, audio_t1
+
+    def _reference_payload(self, audio_t0: float, audio_t1: float) -> dict[str, Any]:
+        cue = match_reference_cue(self._reference_cues, audio_t0, audio_t1)
+        if cue is None:
+            return {
+                "reference_text": "",
+                "reference_t0": None,
+                "reference_t1": None,
+            }
+        return {
+            "reference_text": cue.text,
+            "reference_t0": cue.start_s,
+            "reference_t1": cue.end_s,
+        }
+
+    def _record_replay_asr_event(
+        self,
+        *,
+        source_text_raw: str,
+        source_text_sanitized: str,
+        asr_stage: str,
+        captured_at: datetime,
+        duration_s: float,
+        source_language: str,
+        latency_s: float,
+    ) -> None:
+        if not self.replay_logger.enabled:
+            return
+        audio_t0, audio_t1 = self._audio_window(captured_at, duration_s)
+        payload = {
+            "event_type": "asr",
+            "fixture_id": self.replay_fixture_id,
+            "source_language": source_language or "auto",
+            "source_text_raw": source_text_raw,
+            "source_text_sanitized": source_text_sanitized,
+            "asr_stage": asr_stage,
+            "audio_t0": audio_t0,
+            "audio_t1": audio_t1,
+            "latency_source_s": latency_s,
+            "render_t": self._relative_seconds(datetime.now()),
+        }
+        payload.update(self._reference_payload(audio_t0, audio_t1))
+        self.replay_logger.record_event(payload)
+
+    def _check_replay_completion(self) -> None:
+        if not self.replay_audio_path or self._replay_completion_handled:
+            return
+        if not self.running:
+            self._replay_completion_timer.stop()
+            return
+        if self.listener.is_running:
+            return
+        if not self.audio_queue.empty() or not self.text_queue.empty() or not self.stream_audio_queue.empty():
+            return
+        if self._pending_source_text.strip():
+            self._drop_pending_source_buffer("replay_incomplete_tail")
+            self.ui.clear_live_preview()
+        if self._pending_render_text.strip():
+            self._flush_pending_render(language=self._pending_source_language or "auto")
+        if self._pending_source_text.strip() or self._pending_render_text.strip():
+            return
+        self._replay_completion_handled = True
+        self._replay_completion_timer.stop()
+        self.ui.set_status("Replay fixture completed.")
+        if self.replay_auto_stop_on_complete:
+            self._schedule_toggle(False)
+        if self.replay_auto_exit_on_complete:
+            QTimer.singleShot(350, QApplication.instance().quit)
+
     async def _enqueue_translation_item(
         self,
         *,
         chunk: AudioChunk,
         source_text: str,
+        source_text_raw: str,
         source_language: str,
         transcription_time: float,
         transcription_start_ts: datetime,
@@ -829,6 +1175,7 @@ class MeetingTranslatorController:
         item = (
             chunk,
             source_text,
+            source_text_raw,
             source_language,
             transcription_time,
             transcription_start_ts,
@@ -849,9 +1196,17 @@ class MeetingTranslatorController:
             except asyncio.QueueFull:
                 logging.warning("text_queue remained full after drop; discarding latest transcription item")
 
-    def _sanitize_transcribed_text(self, source_text: str) -> str:
+    def _sanitize_transcribed_text(self, source_text: str, *, source_language: str = "auto") -> str:
         cleaned = self._clean_transcription_noise((source_text or "").strip())
         if not cleaned:
+            return ""
+        if self._should_drop_non_english_source(cleaned, source_language=source_language):
+            if self.debug_enabled:
+                logging.info("debug_non_english_source_dropped lang=%s text=%r", source_language, cleaned[:120])
+            return ""
+        if self.filter_gibberish and self._looks_low_confidence_short_fragment(cleaned):
+            if self.debug_enabled:
+                logging.info("debug_short_fragment_dropped text=%r", cleaned[:120])
             return ""
         if self.filter_gibberish and self._looks_gibberish(cleaned):
             if self.debug_enabled:
@@ -863,11 +1218,52 @@ class MeetingTranslatorController:
         cleaned = self._remove_adjacent_sentence_duplicates(cleaned)
         return cleaned
 
+    def _should_drop_non_english_source(self, text: str, *, source_language: str) -> bool:
+        if not self.strict_en_es_source_guard:
+            return False
+        if (self.target_language or "").strip().lower() != "spanish":
+            return False
+        configured_source = (self.source_language or "").strip().lower()
+        if configured_source not in {"auto-detect", "auto", "english", "en"}:
+            return False
+        if source_language and source_language.strip().lower() not in {"auto", "unknown", "en", "english"}:
+            return False
+        return self._looks_non_english_source_fragment(text)
+
+    @classmethod
+    def _looks_non_english_source_fragment(cls, text: str) -> bool:
+        cleaned = re.sub(r"\s+", " ", (text or "").strip())
+        if not cleaned:
+            return True
+        lowered_full = cleaned.lower()
+        if any(phrase in lowered_full for phrase in cls.GENERIC_SPANISH_NOISE_PHRASES):
+            return True
+        words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", cleaned)
+        if len(words) < 3:
+            return False
+        lowered = [w.lower() for w in words]
+        english_hits = sum(1 for w in lowered if w in cls.ENGLISH_FUNCTION_WORDS)
+        spanish_hits = sum(1 for w in lowered if w in cls.SPANISH_FUNCTION_WORDS)
+        if len(lowered) >= 5 and spanish_hits >= (english_hits + 2):
+            return True
+        if "¿" in cleaned or "¡" in cleaned:
+            return english_hits == 0
+        return False
+
     async def _handle_transcription_preview(self, preview_text: str) -> None:
-        if self.literal_complete_mode or not self.show_source_preview:
-            return
         cleaned = self._clean_transcription_noise(preview_text)
         if not cleaned:
+            return
+        self._record_replay_asr_event(
+            source_text_raw=preview_text,
+            source_text_sanitized=cleaned,
+            asr_stage="preview",
+            captured_at=datetime.now(),
+            duration_s=0.0,
+            source_language="auto",
+            latency_s=0.0,
+        )
+        if self.literal_complete_mode or not self.show_source_preview:
             return
         self._source_preview_active = True
         self.ui.set_live_preview(cleaned)
@@ -911,7 +1307,10 @@ class MeetingTranslatorController:
         self._last_rendered_normalized = ""
         self._last_emitted_text = ""
         self._reset_pending_source_buffer()
+        self._pending_render_revision = 0
         self._source_preview_active = False
+        self._last_preview_at = None
+        self._last_preview_text = ""
         self.ui.clear_live_preview()
         self.ui.clear_segments()
         self.ui.set_status("Visible overlay text cleared. Buffer kept in memory.")
@@ -965,6 +1364,8 @@ class MeetingTranslatorController:
         p95_latency = self._percentile(list(self.latency_window), 0.95)
         metrics_snapshot = self.metrics_reporter.snapshot()
         issue_rate = metrics_snapshot["issue_rate_pct"]
+        premium_ratio = metrics_snapshot.get("premium_ratio", 0.0) * 100.0
+        drop_ratio = metrics_snapshot.get("drop_ratio_pct", 0.0)
         api_time = api_time if api_time is not None else self.last_api_time
         color = "#2ecc71"
         if p95_latency >= 4.0:
@@ -975,7 +1376,7 @@ class MeetingTranslatorController:
         del language, api_time
         debug_text = (
             f"AVG {avg_latency:.2f}s | P95 {p95_latency:.2f}s | "
-            f"Stale {self.skipped_stale_segments} | Issue {issue_rate:.1f}%"
+            f"Drop {drop_ratio:.1f}% | Prem {premium_ratio:.0f}% | Issue {issue_rate:.1f}%"
         )
         self.ui.set_debug_info(debug_text, color)
 
@@ -1042,11 +1443,59 @@ class MeetingTranslatorController:
         return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
     @staticmethod
-    def _looks_gibberish(text: str) -> bool:
+    def _contains_non_latin_script(text: str) -> bool:
+        return bool(re.search(r"[\u0400-\u052F\u0590-\u05FF\u0600-\u06FF\u0750-\u077F]", text or ""))
+
+    @staticmethod
+    def _token_looks_plausible(token: str) -> bool:
+        normalized = re.sub(r"[^a-záéíóúüñ]+", "", (token or "").lower())
+        if not normalized:
+            return False
+        if len(normalized) <= 2:
+            return True
+        if re.search(r"[bcdfghjklmnñpqrstvwxyz]{5,}", normalized):
+            return False
+        return bool(re.search(r"[aeiouáéíóúü]", normalized))
+
+    @classmethod
+    def _looks_low_confidence_short_fragment(cls, text: str) -> bool:
+        cleaned = re.sub(r"\s+", " ", (text or "").strip())
+        if not cleaned:
+            return True
+        if cls._contains_non_latin_script(cleaned):
+            return True
+        words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9'/-]+", cleaned)
+        if not words:
+            return True
+        if len(words) > 4:
+            return False
+        lexical = [token for token in words if re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", token)]
+        if not lexical:
+            return True
+        plausible_hits = sum(1 for token in lexical if cls._token_looks_plausible(token))
+        if plausible_hits / len(lexical) < 0.6:
+            return True
+        if len(lexical) == 1:
+            only = re.sub(r"[^a-záéíóúüñ]+", "", lexical[0].lower())
+            if len(only) >= 9 and only not in {"translation", "incremental", "validation"}:
+                return True
+        return False
+
+    @classmethod
+    def _looks_gibberish(cls, text: str) -> bool:
         normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+        if cls._contains_non_latin_script(normalized):
+            return True
         tokens = re.findall(r"[a-z0-9]+", normalized)
         if len(tokens) < 6:
-            return False
+            weird_tokens = 0
+            for token in tokens:
+                if len(token) >= 8 and not re.search(r"[aeiou]", token):
+                    weird_tokens += 1
+                    continue
+                if re.search(r"[bcdfghjklmnpqrstvwxyz]{5,}", token):
+                    weird_tokens += 1
+            return len(tokens) >= 3 and weird_tokens >= 2
 
         counts = Counter(tokens)
         most_common_count = counts.most_common(1)[0][1]
@@ -1128,8 +1577,13 @@ class MeetingTranslatorController:
             r"\bengvid\b",
             r"\balaskagranny\b",
             r"\bysgrifennydd\b",
+            r"\btranscribe spoken english accurately from noisy system audio\b",
+            r"\bdo not hallucinate or invent words\b",
+            r"\btranscribir ingl[eé]s hablado con precisi[oó]n desde audio de sistema ruidoso\b",
+            r"\bno alucinar ni inventar palabras\b",
             r"\bpreserve names, brands, acronyms, numbers, and technical terms\b",
             r"\bpreservar nombres, marcas, acr[oó]nimos, n[uú]meros y t[eé]rminos t[eé]cnicos\b",
+            r"\[(?:music|m[uú]sica)\]",
         )
         for pattern in noise_patterns:
             cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
@@ -1174,21 +1628,138 @@ class MeetingTranslatorController:
             self._pending_render_text = fragment
             self._pending_captured_at = chunk_captured_at
             self._pending_metrics_data = metrics_data
+            self._pending_render_revision = 0
         else:
             self._pending_render_text = self._merge_fragments(self._pending_render_text, fragment)
             self._pending_metrics_data = self._merge_metrics_data(self._pending_metrics_data, metrics_data)
+        merged_metrics = self._pending_metrics_data or metrics_data
+        self._maybe_emit_preview_segment(
+            pending_text=self._pending_render_text,
+            source_language=source_language,
+            api_time=api_time,
+            metrics_data=merged_metrics,
+        )
 
-        if not self._should_emit_pending(fragment):
+        should_emit = self._should_emit_pending(fragment)
+        if not should_emit:
             return False
+        if self.emit_min_interval_seconds > 0 and self._last_emit_at is not None and self._pending_captured_at is not None:
+            now = datetime.now()
+            since_last_emit = (now - self._last_emit_at).total_seconds()
+            pending_age = (now - self._pending_captured_at).total_seconds()
+            if (
+                since_last_emit < self.emit_min_interval_seconds
+                and pending_age < (self.max_pending_render_age_seconds * 1.8)
+            ):
+                return False
 
         emitted_text = self._pending_render_text
         emitted_captured_at = self._pending_captured_at or chunk_captured_at
         emitted_metrics = self._pending_metrics_data or metrics_data
+        route = str(emitted_metrics.get("route") or "normal")
+        if route not in {"normal", "premium"}:
+            route = "normal"
+        pending_age_s = max(0.0, (datetime.now() - emitted_captured_at).total_seconds())
+        render_revision = self._pending_render_revision + 1
+        decision = self.segment_quality.decide_commit(
+            source_text=str(emitted_metrics.get("source_text") or ""),
+            translated_text=emitted_text,
+            target_language=self.target_language,
+            route=route,  # type: ignore[arg-type]
+            pending_age_s=pending_age_s,
+        )
         self._pending_render_text = ""
         self._pending_captured_at = None
         self._pending_metrics_data = None
-        self._emit_segment(emitted_text, emitted_captured_at, source_language, api_time, emitted_metrics)
+        self._pending_render_revision = 0
+        if decision.stage == "drop":
+            dropped_metrics = dict(emitted_metrics)
+            dropped_metrics["segment_stage"] = "drop"
+            dropped_metrics["route"] = "drop"
+            dropped_metrics["semantic_score"] = decision.semantic_score
+            dropped_metrics["language_guard_triggered"] = decision.language_guard_triggered
+            dropped_metrics["dropped_reason"] = decision.dropped_reason
+            dropped_metrics["had_fallback"] = True
+            dropped_metrics["fallback_reason"] = dropped_metrics.get("fallback_reason") or f"dropped:{decision.dropped_reason}"
+            dropped_metrics["render_revision"] = render_revision
+            self._record_drop_metrics(dropped_metrics)
+            return False
+        self._emit_segment(
+            decision.text,
+            emitted_captured_at,
+            source_language,
+            api_time,
+            emitted_metrics,
+            segment_stage="commit",
+            route=decision.route,
+            semantic_score=decision.semantic_score,
+            language_guard_triggered=decision.language_guard_triggered,
+            render_revision=render_revision,
+            dropped_reason="",
+        )
         return True
+
+    def _maybe_emit_preview_segment(
+        self,
+        *,
+        pending_text: str,
+        source_language: str,
+        api_time: float,
+        metrics_data: dict[str, Any],
+    ) -> None:
+        if not self.dual_pass_enabled:
+            return
+        if self._pending_captured_at is None:
+            return
+        if self.preview_drop_backlog_threshold > 0:
+            if (
+                int(metrics_data.get("text_backlog", 0)) >= self.preview_drop_backlog_threshold
+                or int(metrics_data.get("audio_backlog", 0)) >= self.preview_drop_backlog_threshold
+            ):
+                return
+        now = datetime.now()
+        if self._last_preview_at is not None:
+            since_preview = (now - self._last_preview_at).total_seconds()
+            if since_preview < min(self.preview_max_age_seconds, self.emit_min_interval_seconds):
+                return
+        pending_age_s = max(0.0, (now - self._pending_captured_at).total_seconds())
+        route = str(metrics_data.get("route") or "normal")
+        if route not in {"normal", "premium"}:
+            route = "normal"
+        decision = self.segment_quality.decide_preview(
+            source_text=str(metrics_data.get("source_text") or ""),
+            translated_text=pending_text,
+            target_language=self.target_language,
+            route=route,  # type: ignore[arg-type]
+            pending_age_s=pending_age_s,
+        )
+        if decision.stage != "preview":
+            return
+        if decision.text == self._last_preview_text:
+            return
+        self._source_preview_active = True
+        self._last_preview_at = now
+        self._last_preview_text = decision.text
+        self._pending_render_revision += 1
+        self.ui.set_live_preview(decision.text)
+        emit_interval_s = 0.0
+        if self._last_emit_at is not None:
+            emit_interval_s = max(0.0, (now - self._last_emit_at).total_seconds())
+        self._record_segment_metrics(
+            rendered_text=decision.text,
+            captured_at=self._pending_captured_at,
+            source_language=source_language,
+            latency=max(0.0, (now - self._pending_captured_at).total_seconds()),
+            api_time=api_time,
+            metrics_data=metrics_data,
+            segment_stage="preview",
+            route=decision.route,
+            semantic_score=decision.semantic_score,
+            language_guard_triggered=decision.language_guard_triggered,
+            render_revision=self._pending_render_revision,
+            emit_interval_s=emit_interval_s,
+            dropped_reason="",
+        )
 
     def _emit_segment(
         self,
@@ -1197,6 +1768,13 @@ class MeetingTranslatorController:
         source_language: str,
         api_time: float,
         metrics_data: Optional[dict[str, Any]] = None,
+        *,
+        segment_stage: str = "commit",
+        route: TranslationRoute = "normal",
+        semantic_score: float = 0.0,
+        language_guard_triggered: bool = False,
+        render_revision: int = 0,
+        dropped_reason: str = "",
     ) -> None:
         if self._drop_stale_chunk(captured_at, stage="emit"):
             return
@@ -1207,8 +1785,14 @@ class MeetingTranslatorController:
         if not cleaned:
             return
         self._source_preview_active = False
+        self._last_preview_text = ""
+        self.ui.clear_live_preview()
 
         timestamp = datetime.now()
+        emit_interval_s = 0.0
+        if self._last_emit_at is not None:
+            emit_interval_s = max(0.0, (timestamp - self._last_emit_at).total_seconds())
+        self._last_emit_at = timestamp
         rendered = f"[{self._format_timestamp(timestamp)}] {cleaned}"
         if self._is_duplicate_segment(rendered):
             return
@@ -1227,6 +1811,13 @@ class MeetingTranslatorController:
             latency=latency,
             api_time=api_time,
             metrics_data=metrics_data,
+            segment_stage=segment_stage,
+            route=route,
+            semantic_score=semantic_score,
+            language_guard_triggered=language_guard_triggered,
+            render_revision=render_revision,
+            emit_interval_s=emit_interval_s,
+            dropped_reason=dropped_reason,
         )
         self.chunks_processed += 1
         self.latency_window.append(latency)
@@ -1253,10 +1844,46 @@ class MeetingTranslatorController:
             return
         captured_at = self._pending_captured_at or datetime.now()
         pending_metrics = self._pending_metrics_data or {}
+        route = str(pending_metrics.get("route") or "normal")
+        if route not in {"normal", "premium"}:
+            route = "normal"
+        render_revision = self._pending_render_revision + 1
+        decision = self.segment_quality.decide_commit(
+            source_text=str(pending_metrics.get("source_text") or ""),
+            translated_text=pending,
+            target_language=self.target_language,
+            route=route,  # type: ignore[arg-type]
+            pending_age_s=max(0.0, (datetime.now() - captured_at).total_seconds()),
+        )
         self._pending_render_text = ""
         self._pending_captured_at = None
         self._pending_metrics_data = None
-        self._emit_segment(pending, captured_at, language, self.last_api_time, pending_metrics)
+        self._pending_render_revision = 0
+        if decision.stage == "drop":
+            dropped_metrics = dict(pending_metrics)
+            dropped_metrics["segment_stage"] = "drop"
+            dropped_metrics["route"] = "drop"
+            dropped_metrics["semantic_score"] = decision.semantic_score
+            dropped_metrics["language_guard_triggered"] = decision.language_guard_triggered
+            dropped_metrics["dropped_reason"] = decision.dropped_reason
+            dropped_metrics["had_fallback"] = True
+            dropped_metrics["fallback_reason"] = dropped_metrics.get("fallback_reason") or f"dropped:{decision.dropped_reason}"
+            dropped_metrics["render_revision"] = render_revision
+            self._record_drop_metrics(dropped_metrics)
+            return
+        self._emit_segment(
+            decision.text,
+            captured_at,
+            language,
+            self.last_api_time,
+            pending_metrics,
+            segment_stage="commit",
+            route=decision.route,
+            semantic_score=decision.semantic_score,
+            language_guard_triggered=decision.language_guard_triggered,
+            render_revision=render_revision,
+            dropped_reason="",
+        )
 
     def _maybe_show_source_preview(self, source_text: str) -> None:
         if self.literal_complete_mode or not self.show_source_preview:
@@ -1278,30 +1905,54 @@ class MeetingTranslatorController:
         fragment = self._normalize_fragment(source_text)
         if not fragment:
             return
+        raw_fragment = self._normalize_fragment(str(metrics_data.get("source_text_raw") or source_text))
         if not self._pending_source_text:
             self._pending_source_text = fragment
+            self._pending_source_raw_text = raw_fragment
             self._pending_source_captured_at = chunk_captured_at
             self._pending_source_language = source_language or "auto"
             self._pending_source_metrics_data = dict(metrics_data)
             self._pending_source_fragment_count = 1
         else:
             self._pending_source_text = self._merge_fragments(self._pending_source_text, fragment)
+            self._pending_source_raw_text = self._merge_fragments(self._pending_source_raw_text, raw_fragment)
             self._pending_source_language = source_language or self._pending_source_language or "auto"
             self._pending_source_metrics_data = self._merge_metrics_data(self._pending_source_metrics_data, metrics_data)
             self._pending_source_fragment_count += 1
         self._maybe_show_source_preview(self._pending_source_text)
 
-    def _consume_pending_source_buffer(self) -> Optional[tuple[str, str, dict[str, Any]]]:
+    def _consume_pending_source_buffer(self) -> Optional[tuple[str, str, str, dict[str, Any]]]:
         pending = self._pending_source_text.strip()
         if not pending:
             return None
+        raw_pending = self._pending_source_raw_text.strip() or pending
         language = self._pending_source_language or "auto"
         metrics_data = dict(self._pending_source_metrics_data or {})
         self._reset_pending_source_buffer()
-        return pending, language, metrics_data
+        return pending, raw_pending, language, metrics_data
+
+    def _drop_pending_source_buffer(self, reason: str) -> None:
+        pending = self._pending_source_text.strip()
+        if not pending:
+            return
+        metrics_data = dict(self._pending_source_metrics_data or {})
+        metrics_data["source_text_raw"] = self._pending_source_raw_text.strip() or pending
+        metrics_data["source_text_sanitized"] = pending
+        metrics_data["source_text"] = pending
+        metrics_data["segment_stage"] = "drop"
+        metrics_data["route"] = "drop"
+        metrics_data["semantic_score"] = float(metrics_data.get("semantic_score", 0.0) or 0.0)
+        metrics_data["language_guard_triggered"] = bool(metrics_data.get("language_guard_triggered", False))
+        metrics_data["dropped_reason"] = reason
+        metrics_data["had_fallback"] = True
+        metrics_data["fallback_reason"] = metrics_data.get("fallback_reason") or f"dropped:{reason}"
+        metrics_data["render_revision"] = self._pending_render_revision + 1
+        self._record_drop_metrics(metrics_data)
+        self._reset_pending_source_buffer()
 
     def _reset_pending_source_buffer(self) -> None:
         self._pending_source_text = ""
+        self._pending_source_raw_text = ""
         self._pending_source_captured_at = None
         self._pending_source_language = "auto"
         self._pending_source_metrics_data = None
@@ -1318,10 +1969,20 @@ class MeetingTranslatorController:
         age_s = None
         if self._pending_source_captured_at is not None:
             age_s = (datetime.now() - self._pending_source_captured_at).total_seconds()
+        has_terminal_punctuation = re.search(r"[.!?]\s*$", pending) is not None
+        if (
+            self.strict_en_es_source_guard
+            and (self.target_language or "").strip().lower() == "spanish"
+            and not has_terminal_punctuation
+            and not incomplete_tail
+            and word_count < max(self.source_strict_min_words, self.SOURCE_TRANSLATION_MIN_WORDS)
+            and (age_s is None or age_s < self.source_strict_max_wait_seconds)
+        ):
+            return False
         if self.chunks_processed == 0 and age_s is not None and not incomplete_tail:
             if word_count >= self.MIN_WORDS_ON_AGE_FLUSH and age_s >= self.SOURCE_TRANSLATION_FIRST_AGE_SECONDS:
                 return True
-        if re.search(r"[.!?]\s*$", pending) is not None and word_count >= self.min_emit_words:
+        if has_terminal_punctuation and word_count >= self.min_emit_words:
             return True
         if (
             self._pending_source_fragment_count >= self.SOURCE_TRANSLATION_FORCE_AFTER_FRAGMENTS
@@ -1413,6 +2074,9 @@ class MeetingTranslatorController:
             previous.get("captured_at", incoming.get("captured_at")),
             incoming.get("captured_at", previous.get("captured_at")),
         )
+        merged["audio_duration_s"] = float(previous.get("audio_duration_s", 0.0) or 0.0) + float(
+            incoming.get("audio_duration_s", 0.0) or 0.0
+        )
         merged["transcription_start_ts"] = min(
             previous.get("transcription_start_ts", incoming.get("transcription_start_ts")),
             incoming.get("transcription_start_ts", previous.get("transcription_start_ts")),
@@ -1440,6 +2104,23 @@ class MeetingTranslatorController:
         merged["had_fallback"] = bool(previous.get("had_fallback", False) or incoming.get("had_fallback", False))
         merged["fallback_reason"] = incoming.get("fallback_reason") or previous.get("fallback_reason", "")
         merged["source_language"] = incoming.get("source_language") or previous.get("source_language", "auto")
+        merged["fixture_id"] = incoming.get("fixture_id") or previous.get("fixture_id", "")
+        merged["source_text_raw"] = incoming.get("source_text_raw") or previous.get("source_text_raw", "")
+        merged["source_text_sanitized"] = incoming.get("source_text_sanitized") or previous.get("source_text_sanitized", "")
+        merged["source_text"] = incoming.get("source_text") or previous.get("source_text", "")
+        merged["route"] = (
+            "premium"
+            if (previous.get("route") == "premium" or incoming.get("route") == "premium")
+            else incoming.get("route") or previous.get("route", "normal")
+        )
+        merged["semantic_score"] = max(
+            float(previous.get("semantic_score", 0.0) or 0.0),
+            float(incoming.get("semantic_score", 0.0) or 0.0),
+        )
+        merged["language_guard_triggered"] = bool(
+            previous.get("language_guard_triggered", False) or incoming.get("language_guard_triggered", False)
+        )
+        merged["dropped_reason"] = incoming.get("dropped_reason") or previous.get("dropped_reason", "")
         return merged
 
     def _record_segment_metrics(
@@ -1450,13 +2131,28 @@ class MeetingTranslatorController:
         latency: float,
         api_time: float,
         metrics_data: Optional[dict[str, Any]],
+        *,
+        segment_stage: str = "commit",
+        route: TranslationRoute = "normal",
+        semantic_score: float = 0.0,
+        language_guard_triggered: bool = False,
+        render_revision: int = 0,
+        emit_interval_s: float = 0.0,
+        dropped_reason: str = "",
     ) -> None:
-        if not self.metrics_reporter.enabled:
+        if (
+            not self.metrics_reporter.enabled
+            and not self.replay_logger.enabled
+        ):
             return
-        if len(rendered_text.strip()) < self.metrics_min_text_len:
-            return
+        skip_metrics_segment = bool(
+            self.metrics_reporter.enabled
+            and segment_stage == "commit"
+            and len(rendered_text.strip()) < self.metrics_min_text_len
+        )
         data = dict(metrics_data or {})
         data.setdefault("captured_at", captured_at)
+        data.setdefault("audio_duration_s", 0.0)
         data.setdefault("source_language", source_language)
         data.setdefault("transcription_start_ts", captured_at)
         data.setdefault("transcription_end_ts", captured_at)
@@ -1468,9 +2164,23 @@ class MeetingTranslatorController:
         data.setdefault("text_backlog", self.text_queue.qsize())
         data.setdefault("had_fallback", False)
         data.setdefault("fallback_reason", "")
+        data.setdefault("source_text", "")
+        data.setdefault("source_text_raw", data.get("source_text", ""))
+        data.setdefault("source_text_sanitized", data.get("source_text", ""))
+        data.setdefault("fixture_id", self.replay_fixture_id)
+        data.setdefault("route", route)
+        data.setdefault("semantic_score", semantic_score)
+        data.setdefault("language_guard_triggered", language_guard_triggered)
+        data.setdefault("dropped_reason", dropped_reason)
+        data.setdefault("test_id", self.benchmark_test_id or "N/D")
+        audio_t0, audio_t1 = self._audio_window(captured_at, float(data.get("audio_duration_s", 0.0) or 0.0))
+        reference_payload = self._reference_payload(audio_t0, audio_t1)
+        render_t = self._relative_seconds(datetime.now())
         payload = {
             "event_type": "segment",
             "recorded_at": datetime.now().isoformat(timespec="milliseconds"),
+            "fixture_id": str(data.get("fixture_id") or self.replay_fixture_id),
+            "test_id": str(data.get("test_id") or "N/D"),
             "captured_at": data["captured_at"].isoformat(timespec="milliseconds"),
             "source_language": data["source_language"] or "auto",
             "transcription_start": data["transcription_start_ts"].isoformat(timespec="milliseconds"),
@@ -1486,8 +2196,55 @@ class MeetingTranslatorController:
             "text_length": len(rendered_text),
             "had_fallback": bool(data["had_fallback"]),
             "fallback_reason": str(data["fallback_reason"] or ""),
+            "segment_stage": segment_stage,
+            "route": str(data["route"] or route),
+            "semantic_score": float(data["semantic_score"]),
+            "language_guard_triggered": bool(data["language_guard_triggered"]),
+            "emit_interval_s": float(emit_interval_s),
+            "dropped_reason": str(data["dropped_reason"] or dropped_reason),
+            "rendered_text": rendered_text,
+            "source_text_raw": str(data.get("source_text_raw") or data.get("source_text") or ""),
+            "source_text_sanitized": str(data.get("source_text_sanitized") or data.get("source_text") or ""),
+            "source_text": str(data.get("source_text") or ""),
+            "asr_stage": "stable",
+            "translation_stage": segment_stage,
+            "render_revision": int(data.get("render_revision", render_revision) or render_revision),
+            "audio_t0": audio_t0,
+            "audio_t1": audio_t1,
+            "render_t": render_t,
+            "reference_text": str(reference_payload.get("reference_text") or ""),
+            "reference_t0": reference_payload.get("reference_t0"),
+            "reference_t1": reference_payload.get("reference_t1"),
         }
-        self.metrics_reporter.record_segment(payload)
+        if self.metrics_reporter.enabled and not skip_metrics_segment:
+            self.metrics_reporter.record_segment(payload)
+        if self.replay_logger.enabled:
+            self.replay_logger.record_event(dict(payload))
+
+    def _record_drop_metrics(self, metrics_data: dict[str, Any]) -> None:
+        captured_at = metrics_data.get("captured_at") or datetime.now()
+        if not isinstance(captured_at, datetime):
+            captured_at = datetime.now()
+        source_language = str(metrics_data.get("source_language") or "auto")
+        translation_end = metrics_data.get("translation_end_ts")
+        if isinstance(translation_end, datetime):
+            latency = max(0.0, (translation_end - captured_at).total_seconds())
+        else:
+            latency = max(0.0, (datetime.now() - captured_at).total_seconds())
+        self._record_segment_metrics(
+            rendered_text="",
+            captured_at=captured_at,
+            source_language=source_language,
+            latency=latency,
+            api_time=float(metrics_data.get("transcription_time_s", 0.0)) + float(metrics_data.get("translation_time_s", 0.0)),
+            metrics_data=metrics_data,
+            segment_stage="drop",
+            route="drop",
+            semantic_score=float(metrics_data.get("semantic_score", 0.0) or 0.0),
+            language_guard_triggered=bool(metrics_data.get("language_guard_triggered", False)),
+            emit_interval_s=0.0,
+            dropped_reason=str(metrics_data.get("dropped_reason") or "unknown"),
+        )
 
     def _trim_overlap_with_previous_emitted(self, translated_text: str) -> str:
         cleaned = re.sub(r"\s+", " ", translated_text.strip())
@@ -1525,13 +2282,14 @@ class MeetingTranslatorController:
             return False
         word_count = len(re.findall(r"\b\w+\b", pending))
         sentence_end = re.search(r"[.!?]\s*$", pending) is not None
-        target_words = max(self.merge_min_words, self.min_emit_words)
+        target_words = max(self.merge_min_words, self.min_emit_words, self.commit_min_words)
         if self._source_preview_active and word_count >= self.MIN_WORDS_ON_AGE_FLUSH:
             return True
         if self._pending_captured_at:
             age_s = (datetime.now() - self._pending_captured_at).total_seconds()
             # Hard upper bound for on-screen delay while listening.
-            if age_s >= self.max_pending_render_age_seconds:
+            hard_age = min(self.max_pending_render_age_seconds, self.commit_max_age_seconds)
+            if age_s >= hard_age:
                 if word_count >= self.MIN_WORDS_ON_AGE_FLUSH:
                     return True
                 # Keep startup from staying blank for long periods.
@@ -1552,13 +2310,18 @@ class MeetingTranslatorController:
             age_s = (datetime.now() - self._pending_captured_at).total_seconds()
             if age_s >= self.merge_flush_seconds and word_count >= self.MIN_WORDS_ON_AGE_FLUSH:
                 return True
+        if (self.text_queue.qsize() > 0 or self._current_audio_backlog() > 0) and word_count >= max(
+            self.min_emit_words,
+            self.commit_min_words - 1,
+        ):
+            return True
         if word_count >= self.merge_max_words:
             return True
         if sentence_end:
-            return word_count >= self.min_emit_words
+            return word_count >= max(self.min_emit_words, self.commit_min_words - 1)
         if re.search(r"[,:;]\s*$", latest_fragment):
             return False
-        return word_count >= target_words and len(pending) >= 48
+        return word_count >= target_words and len(pending) >= self.emit_min_chars
 
     def _format_timestamp(self, timestamp: datetime) -> str:
         return timestamp.strftime("%M:%S" if self.short_timestamps else "%H:%M:%S")
@@ -1568,7 +2331,19 @@ def main() -> None:
     load_dotenv()
     log_level_name = (os.getenv("LOG_LEVEL", "INFO") or "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
-    logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(message)s")
+    live_log_path = Path(os.getenv("LIVE_RUN_LOG_PATH", "./reports/live_run.log"))
+    live_log_path.parent.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        handlers.append(logging.FileHandler(live_log_path, mode="a", encoding="utf-8"))
+    except OSError:
+        pass
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=handlers,
+        force=True,
+    )
     preview_mode = "--preview-ui" in sys.argv
     qt_args = [arg for arg in sys.argv if arg != "--preview-ui"]
 

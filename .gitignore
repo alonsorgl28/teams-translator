@@ -3,3 +3,7 @@
 .DS_Store
 __pycache__/
 *.pyc
+output/
+reports/
+transcript*.txt
+translated_transcript*.txt

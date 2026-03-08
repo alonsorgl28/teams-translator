@@ -1,0 +1,34 @@
+fixtures:
+  - fixture_id: a16z_atlassian_ceo_01
+    title: "Atlassian CEO on the SaaS Apocalypse, AI Agents & What Comes Next"
+    source_url: "https://www.youtube.com/watch?v=<set-me>"
+    source_type: "youtube"
+    clip_start_s: 120.0
+    duration_s: 60.0
+    audio_path: "../output/replay/a16z_atlassian_ceo_01/fixture.wav"
+    reference_caption_path: "../output/replay/a16z_atlassian_ceo_01/reference.en.vtt"
+    reference_transcript_path: "../output/replay/a16z_atlassian_ceo_01/reference.txt"
+    target_language: "Spanish"
+    notes: "Golden clip. Replace source_url with the exact video URL you are testing."
+  - fixture_id: backup_clear_normal_01
+    title: "Benchmark backup - clear English normal pace"
+    source_url: "https://www.youtube.com/watch?v=qjY31x0m3d8"
+    source_type: "youtube"
+    clip_start_s: 0.0
+    duration_s: 60.0
+    audio_path: "../output/replay/backup_clear_normal_01/fixture.wav"
+    reference_caption_path: "../output/replay/backup_clear_normal_01/reference.en.vtt"
+    reference_transcript_path: "../output/replay/backup_clear_normal_01/reference.txt"
+    target_language: "Spanish"
+    notes: "Fallback fixture derived from existing EN benchmark manifest."
+  - fixture_id: backup_youtube_ref_01
+    title: "Benchmark backup - YouTube subtitle reference"
+    source_url: "https://www.youtube.com/watch?v=7Q-aVBv7PWM"
+    source_type: "youtube"
+    clip_start_s: 0.0
+    duration_s: 60.0
+    audio_path: "../output/replay/backup_youtube_ref_01/fixture.wav"
+    reference_caption_path: "../output/replay/backup_youtube_ref_01/reference.en.vtt"
+    reference_transcript_path: "../output/replay/backup_youtube_ref_01/reference.txt"
+    target_language: "Spanish"
+    notes: "Backup fixture where YouTube subtitles should be available."
