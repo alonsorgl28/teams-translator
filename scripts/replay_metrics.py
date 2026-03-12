@@ -78,6 +78,21 @@ def main() -> None:
     emit_gaps = [float(event.get("emit_interval_s", 0.0) or 0.0) for event in commit_segments if float(event.get("emit_interval_s", 0.0) or 0.0) > 0.0]
     premium_commits = [event for event in commit_segments if str(event.get("route") or "") == "premium"]
     language_guard_hits = sum(1 for event in segments if bool(event.get("language_guard_triggered", False)))
+    source_confidences = [float(event.get("source_confidence", 0.0) or 0.0) for event in commit_segments]
+    mixed_script_commits = [event for event in commit_segments if bool(event.get("mixed_script_detected", False))]
+    non_target_commits = [event for event in commit_segments if bool(event.get("non_target_language_detected", False))]
+    too_similar_commits = [event for event in commit_segments if bool(event.get("translation_too_similar_to_source", False))]
+    low_confidence_commits = [event for event in commit_segments if float(event.get("source_confidence", 0.0) or 0.0) < 0.39]
+    hallucinated_commits = [
+        event
+        for event in commit_segments
+        if (
+            bool(event.get("mixed_script_detected", False))
+            or bool(event.get("non_target_language_detected", False))
+            or bool(event.get("translation_too_similar_to_source", False))
+            or float(event.get("source_confidence", 0.0) or 0.0) < 0.39
+        )
+    ]
 
     fixture_id = fixture_filter or (str(events[0].get("fixture_id") or "N/D") if events else "N/D")
     metrics_row = {
@@ -92,8 +107,15 @@ def main() -> None:
         "commit_latency_p50_s": _fmt(_percentile(commit_latencies, 0.5)),
         "commit_latency_p95_s": _fmt(_percentile(commit_latencies, 0.95)),
         "emit_gap_stddev_s": _fmt(statistics.pstdev(emit_gaps) if len(emit_gaps) >= 2 else None),
+        "source_confidence_p50": _fmt(_percentile(source_confidences, 0.5)),
+        "source_confidence_p95": _fmt(_percentile(source_confidences, 0.95)),
         "premium_commit_ratio": _fmt((len(premium_commits) / len(commit_segments)) if commit_segments else None),
         "language_guard_hits": str(language_guard_hits),
+        "mixed_script_rate": _fmt((len(mixed_script_commits) / len(commit_segments)) if commit_segments else None),
+        "non_target_commit_rate": _fmt((len(non_target_commits) / len(commit_segments)) if commit_segments else None),
+        "translation_too_similar_rate": _fmt((len(too_similar_commits) / len(commit_segments)) if commit_segments else None),
+        "low_source_confidence_commit_rate": _fmt((len(low_confidence_commits) / len(commit_segments)) if commit_segments else None),
+        "hallucinated_commit_rate": _fmt((len(hallucinated_commits) / len(commit_segments)) if commit_segments else None),
     }
 
     output_path = Path(args.output_csv).resolve()

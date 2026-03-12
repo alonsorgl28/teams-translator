@@ -97,6 +97,12 @@ def main() -> None:
                 "render_t_commit": "N/D",
                 "latency_source_s": "N/D",
                 "latency_commit_s": "N/D",
+                "source_confidence": "N/D",
+                "source_incomplete": "0",
+                "mixed_script_detected": "0",
+                "non_target_language_detected": "0",
+                "translation_too_similar_to_source": "0",
+                "semantic_drift_score": "N/D",
                 "route": str(event.get("route") or "normal"),
                 "drop_reason": "",
                 "reference_text": str(event.get("reference_text") or ""),
@@ -115,6 +121,14 @@ def main() -> None:
             row["latency_commit_s"] = _fmt_float(float(event.get("latency_total_s", 0.0) or 0.0))
         elif str(event.get("segment_stage") or "") == "drop":
             row["drop_reason"] = str(event.get("dropped_reason") or row["drop_reason"])
+        row["source_confidence"] = _fmt_float(float(event.get("source_confidence", 0.0) or 0.0))
+        row["source_incomplete"] = "1" if bool(event.get("source_incomplete", False)) else "0"
+        row["mixed_script_detected"] = "1" if bool(event.get("mixed_script_detected", False)) else "0"
+        row["non_target_language_detected"] = "1" if bool(event.get("non_target_language_detected", False)) else "0"
+        row["translation_too_similar_to_source"] = (
+            "1" if bool(event.get("translation_too_similar_to_source", False)) else "0"
+        )
+        row["semantic_drift_score"] = _fmt_float(float(event.get("semantic_drift_score", 0.0) or 0.0))
 
     if reference_cues:
         for row in grouped.values():
@@ -143,6 +157,12 @@ def main() -> None:
         "render_t_commit",
         "latency_source_s",
         "latency_commit_s",
+        "source_confidence",
+        "source_incomplete",
+        "mixed_script_detected",
+        "non_target_language_detected",
+        "translation_too_similar_to_source",
+        "semantic_drift_score",
         "route",
         "drop_reason",
         "reference_text",

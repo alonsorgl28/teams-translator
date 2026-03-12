@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from collections import deque
 from unittest.mock import MagicMock
 
 from translation_service import TechnicalTranslationService
@@ -49,15 +50,15 @@ class LooksSpanishTests(unittest.TestCase):
         service = object.__new__(TechnicalTranslationService)
         service._context_enabled = True
         service._glossary_enabled = True
-        service._recent_source = []
-        service._recent_translations = []
+        service._recent_source = deque()
+        service._recent_translations = deque()
         service._session_terms = {}
         service._term_memory_size = 24
         service._term_min_count = 2
         service.last_error = None
         service._remember_turn("more quickly and", "más rápido y")
-        self.assertEqual(service._recent_source, [])
-        self.assertEqual(service._recent_translations, [])
+        self.assertEqual(list(service._recent_source), [])
+        self.assertEqual(list(service._recent_translations), [])
         self.assertEqual(service._session_terms, {})
 
     def test_detects_non_spanish_output_when_cjk_present(self) -> None:

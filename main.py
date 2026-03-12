@@ -37,7 +37,7 @@ from overlay_ui import OverlayWindow
 from replay_logger import ReplayEventLogger
 from replay_tools import FixtureSpec, SubtitleCue, load_replay_manifest, load_subtitle_cues, match_reference_cue
 from segment_quality import SegmentQualityGate, TranslationRoute
-from transcription_service import RealtimeTranscriptionEvent, RealtimeTranscriptionService, WhisperTranscriptionService
+from transcription_service import RealtimeTranscriptionService, WhisperTranscriptionService
 from translation_service import TechnicalTranslationService
 
 
@@ -117,7 +117,9 @@ class OverlayPreviewRunner:
         self.ui.set_status("Preview detenido.")
 
     def _on_copy_requested(self) -> None:
-        QApplication.clipboard().setText(self.ui.get_full_transcript_text())
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(self.ui.get_full_transcript_text())
         self.ui.set_status("Preview: transcript copiado al portapapeles.")
 
     def _on_export_requested(self, path: str) -> None:
@@ -145,7 +147,7 @@ class OverlayPreviewRunner:
         self._latency_idx += 1
         self.ui.set_status(f"Live preview (english -> es) | {latency:.1f}s")
         color = "#2ecc71" if latency < 2.2 else "#f1c40f"
-        self.ui.set_debug_info(f"AVG 1.92s | P95 2.45s | Issue 0.0%", color)
+        self.ui.set_debug_info("AVG 1.92s | P95 2.45s | Issue 0.0%", color)
 
 
 class MeetingTranslatorController:
@@ -912,6 +914,12 @@ class MeetingTranslatorController:
                     "source_text_raw": source_text_raw,
                     "source_text_sanitized": source_text,
                     "source_text": source_text,
+                    "source_confidence": self.segment_quality.confidence_from_source(source_text),
+                    "source_incomplete": False,
+                    "mixed_script_detected": False,
+                    "non_target_language_detected": False,
+                    "translation_too_similar_to_source": False,
+                    "semantic_drift_score": 0.0,
                 }
                 self._buffer_source_fragment(
                     source_text,
@@ -992,6 +1000,12 @@ class MeetingTranslatorController:
                 source_metrics["translated_text_raw"] = translated
                 source_metrics["route"] = route
                 source_metrics["semantic_score"] = decision.semantic_score
+                source_metrics["source_confidence"] = decision.source_confidence
+                source_metrics["source_incomplete"] = decision.source_incomplete
+                source_metrics["mixed_script_detected"] = decision.mixed_script_detected
+                source_metrics["non_target_language_detected"] = decision.non_target_language_detected
+                source_metrics["translation_too_similar_to_source"] = decision.translation_too_similar_to_source
+                source_metrics["semantic_drift_score"] = decision.semantic_drift_score
                 source_metrics["language_guard_triggered"] = decision.language_guard_triggered
                 source_metrics["dropped_reason"] = decision.dropped_reason
                 source_metrics["had_fallback"] = bool(fallback_reason)
@@ -1008,7 +1022,14 @@ class MeetingTranslatorController:
                         float(source_metrics["transcription_time_s"]),
                         translation_time,
                     )
-                hard_drop_reasons = {"language_guard", "semantic_low", "commit_empty", "reject_phrase"}
+                hard_drop_reasons = {
+                    "language_guard",
+                    "semantic_low",
+                    "commit_empty",
+                    "reject_phrase",
+                    "source_low_confidence",
+                    "translation_too_similar",
+                }
                 if decision.stage == "drop" and decision.dropped_reason in hard_drop_reasons:
                     source_metrics["segment_stage"] = "drop"
                     source_metrics["route"] = "drop"
@@ -1121,6 +1142,7 @@ class MeetingTranslatorController:
         if not self.replay_logger.enabled:
             return
         audio_t0, audio_t1 = self._audio_window(captured_at, duration_s)
+        source_confidence = self.segment_quality.confidence_from_source(source_text_sanitized)
         payload = {
             "event_type": "asr",
             "fixture_id": self.replay_fixture_id,
@@ -1131,6 +1153,8 @@ class MeetingTranslatorController:
             "audio_t0": audio_t0,
             "audio_t1": audio_t1,
             "latency_source_s": latency_s,
+            "source_confidence": source_confidence,
+            "source_incomplete": self.segment_quality._source_incomplete(source_text_sanitized),
             "render_t": self._relative_seconds(datetime.now()),
         }
         payload.update(self._reference_payload(audio_t0, audio_t1))
@@ -1159,7 +1183,9 @@ class MeetingTranslatorController:
         if self.replay_auto_stop_on_complete:
             self._schedule_toggle(False)
         if self.replay_auto_exit_on_complete:
-            QTimer.singleShot(350, QApplication.instance().quit)
+            app = QApplication.instance()
+            if app is not None:
+                QTimer.singleShot(350, app.quit)
 
     async def _enqueue_translation_item(
         self,
@@ -1294,7 +1320,9 @@ class MeetingTranslatorController:
 
     def _on_copy_requested(self) -> None:
         payload = self.ui.get_full_transcript_text()
-        QApplication.clipboard().setText(payload)
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(payload)
         self.ui.set_status("Full transcript copied to clipboard.")
 
     def _on_export_requested(self, path: str) -> None:
@@ -1336,10 +1364,9 @@ class MeetingTranslatorController:
         if self.realtime_transcriber is not None:
             self.realtime_transcriber.reset_context()
         if self.translator is not None:
-            if hasattr(self.translator, "reset_context"):
-                self.translator.reset_context()
-            elif hasattr(self.translator, "clear_context"):
-                self.translator.clear_context()
+            reset_context = getattr(self.translator, "reset_context", None)
+            if callable(reset_context):
+                reset_context()
         self.ui.set_status(f"Settings applied: {source_language} -> {target_language}.")
 
     def _on_audio_source_changed(self, audio_source: str) -> None:
@@ -1668,6 +1695,16 @@ class MeetingTranslatorController:
             route=route,  # type: ignore[arg-type]
             pending_age_s=pending_age_s,
         )
+        emitted_metrics = dict(emitted_metrics)
+        emitted_metrics["semantic_score"] = decision.semantic_score
+        emitted_metrics["source_confidence"] = decision.source_confidence
+        emitted_metrics["source_incomplete"] = decision.source_incomplete
+        emitted_metrics["mixed_script_detected"] = decision.mixed_script_detected
+        emitted_metrics["non_target_language_detected"] = decision.non_target_language_detected
+        emitted_metrics["translation_too_similar_to_source"] = decision.translation_too_similar_to_source
+        emitted_metrics["semantic_drift_score"] = decision.semantic_drift_score
+        emitted_metrics["language_guard_triggered"] = decision.language_guard_triggered
+        emitted_metrics["dropped_reason"] = decision.dropped_reason
         self._pending_render_text = ""
         self._pending_captured_at = None
         self._pending_metrics_data = None
@@ -1676,9 +1713,6 @@ class MeetingTranslatorController:
             dropped_metrics = dict(emitted_metrics)
             dropped_metrics["segment_stage"] = "drop"
             dropped_metrics["route"] = "drop"
-            dropped_metrics["semantic_score"] = decision.semantic_score
-            dropped_metrics["language_guard_triggered"] = decision.language_guard_triggered
-            dropped_metrics["dropped_reason"] = decision.dropped_reason
             dropped_metrics["had_fallback"] = True
             dropped_metrics["fallback_reason"] = dropped_metrics.get("fallback_reason") or f"dropped:{decision.dropped_reason}"
             dropped_metrics["render_revision"] = render_revision
@@ -1751,7 +1785,17 @@ class MeetingTranslatorController:
             source_language=source_language,
             latency=max(0.0, (now - self._pending_captured_at).total_seconds()),
             api_time=api_time,
-            metrics_data=metrics_data,
+            metrics_data={
+                **metrics_data,
+                "semantic_score": decision.semantic_score,
+                "source_confidence": decision.source_confidence,
+                "source_incomplete": decision.source_incomplete,
+                "mixed_script_detected": decision.mixed_script_detected,
+                "non_target_language_detected": decision.non_target_language_detected,
+                "translation_too_similar_to_source": decision.translation_too_similar_to_source,
+                "semantic_drift_score": decision.semantic_drift_score,
+                "language_guard_triggered": decision.language_guard_triggered,
+            },
             segment_stage="preview",
             route=decision.route,
             semantic_score=decision.semantic_score,
@@ -1855,6 +1899,16 @@ class MeetingTranslatorController:
             route=route,  # type: ignore[arg-type]
             pending_age_s=max(0.0, (datetime.now() - captured_at).total_seconds()),
         )
+        pending_metrics = dict(pending_metrics)
+        pending_metrics["semantic_score"] = decision.semantic_score
+        pending_metrics["source_confidence"] = decision.source_confidence
+        pending_metrics["source_incomplete"] = decision.source_incomplete
+        pending_metrics["mixed_script_detected"] = decision.mixed_script_detected
+        pending_metrics["non_target_language_detected"] = decision.non_target_language_detected
+        pending_metrics["translation_too_similar_to_source"] = decision.translation_too_similar_to_source
+        pending_metrics["semantic_drift_score"] = decision.semantic_drift_score
+        pending_metrics["language_guard_triggered"] = decision.language_guard_triggered
+        pending_metrics["dropped_reason"] = decision.dropped_reason
         self._pending_render_text = ""
         self._pending_captured_at = None
         self._pending_metrics_data = None
@@ -1863,9 +1917,6 @@ class MeetingTranslatorController:
             dropped_metrics = dict(pending_metrics)
             dropped_metrics["segment_stage"] = "drop"
             dropped_metrics["route"] = "drop"
-            dropped_metrics["semantic_score"] = decision.semantic_score
-            dropped_metrics["language_guard_triggered"] = decision.language_guard_triggered
-            dropped_metrics["dropped_reason"] = decision.dropped_reason
             dropped_metrics["had_fallback"] = True
             dropped_metrics["fallback_reason"] = dropped_metrics.get("fallback_reason") or f"dropped:{decision.dropped_reason}"
             dropped_metrics["render_revision"] = render_revision
@@ -2108,6 +2159,21 @@ class MeetingTranslatorController:
         merged["source_text_raw"] = incoming.get("source_text_raw") or previous.get("source_text_raw", "")
         merged["source_text_sanitized"] = incoming.get("source_text_sanitized") or previous.get("source_text_sanitized", "")
         merged["source_text"] = incoming.get("source_text") or previous.get("source_text", "")
+        merged["source_confidence"] = max(
+            float(previous.get("source_confidence", 0.0) or 0.0),
+            float(incoming.get("source_confidence", 0.0) or 0.0),
+        )
+        merged["source_incomplete"] = bool(previous.get("source_incomplete", False) or incoming.get("source_incomplete", False))
+        merged["mixed_script_detected"] = bool(
+            previous.get("mixed_script_detected", False) or incoming.get("mixed_script_detected", False)
+        )
+        merged["non_target_language_detected"] = bool(
+            previous.get("non_target_language_detected", False) or incoming.get("non_target_language_detected", False)
+        )
+        merged["translation_too_similar_to_source"] = bool(
+            previous.get("translation_too_similar_to_source", False)
+            or incoming.get("translation_too_similar_to_source", False)
+        )
         merged["route"] = (
             "premium"
             if (previous.get("route") == "premium" or incoming.get("route") == "premium")
@@ -2119,6 +2185,10 @@ class MeetingTranslatorController:
         )
         merged["language_guard_triggered"] = bool(
             previous.get("language_guard_triggered", False) or incoming.get("language_guard_triggered", False)
+        )
+        merged["semantic_drift_score"] = max(
+            float(previous.get("semantic_drift_score", 0.0) or 0.0),
+            float(incoming.get("semantic_drift_score", 0.0) or 0.0),
         )
         merged["dropped_reason"] = incoming.get("dropped_reason") or previous.get("dropped_reason", "")
         return merged
@@ -2167,6 +2237,12 @@ class MeetingTranslatorController:
         data.setdefault("source_text", "")
         data.setdefault("source_text_raw", data.get("source_text", ""))
         data.setdefault("source_text_sanitized", data.get("source_text", ""))
+        data.setdefault("source_confidence", 0.0)
+        data.setdefault("source_incomplete", False)
+        data.setdefault("mixed_script_detected", False)
+        data.setdefault("non_target_language_detected", False)
+        data.setdefault("translation_too_similar_to_source", False)
+        data.setdefault("semantic_drift_score", max(0.0, 1.0 - float(data.get("semantic_score", semantic_score) or 0.0)))
         data.setdefault("fixture_id", self.replay_fixture_id)
         data.setdefault("route", route)
         data.setdefault("semantic_score", semantic_score)
@@ -2206,6 +2282,12 @@ class MeetingTranslatorController:
             "source_text_raw": str(data.get("source_text_raw") or data.get("source_text") or ""),
             "source_text_sanitized": str(data.get("source_text_sanitized") or data.get("source_text") or ""),
             "source_text": str(data.get("source_text") or ""),
+            "source_confidence": float(data.get("source_confidence", 0.0) or 0.0),
+            "source_incomplete": bool(data.get("source_incomplete", False)),
+            "mixed_script_detected": bool(data.get("mixed_script_detected", False)),
+            "non_target_language_detected": bool(data.get("non_target_language_detected", False)),
+            "translation_too_similar_to_source": bool(data.get("translation_too_similar_to_source", False)),
+            "semantic_drift_score": float(data.get("semantic_drift_score", 0.0) or 0.0),
             "asr_stage": "stable",
             "translation_stage": segment_stage,
             "render_revision": int(data.get("render_revision", render_revision) or render_revision),

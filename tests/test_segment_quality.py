@@ -48,6 +48,30 @@ class SegmentQualityGateTests(unittest.TestCase):
         self.assertEqual(decision.stage, "drop")
         self.assertEqual(decision.dropped_reason, "reject_phrase")
 
+    def test_commit_drops_low_confidence_source_before_final_render(self) -> None:
+        gate = SegmentQualityGate()
+        decision = gate.decide_commit(
+            source_text="The substation I'm Grady",
+            translated_text="La subestación soy Grady",
+            target_language="Spanish",
+            route="normal",
+            pending_age_s=0.6,
+        )
+        self.assertEqual(decision.stage, "drop")
+        self.assertEqual(decision.dropped_reason, "source_low_confidence")
+
+    def test_commit_drops_translation_too_similar_to_source(self) -> None:
+        gate = SegmentQualityGate()
+        decision = gate.decide_commit(
+            source_text="this is a model comparison with more detail",
+            translated_text="this is a model comparison with more detail",
+            target_language="Spanish",
+            route="normal",
+            pending_age_s=0.8,
+        )
+        self.assertEqual(decision.stage, "drop")
+        self.assertIn(decision.dropped_reason, {"translation_too_similar", "language_guard"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,26 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "main.py",
+    "segment_quality.py",
+    "translation_service.py",
+    "scripts/bug23_report.py",
+    "scripts/replay_compare.py",
+    "scripts/replay_metrics.py",
+    "scripts/run_bug23_benchmark.py",
+    "scripts/run_bug23_checks.py",
+    "tests/test_bug23_properties.py",
+    "tests/test_segment_quality.py",
+    "tests/test_translation_service.py"
+  ],
+  "exclude": [
+    "output",
+    "reports",
+    ".venv"
+  ],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false
+}

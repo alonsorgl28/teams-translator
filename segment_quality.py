@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import os
 import re
 from dataclasses import dataclass
@@ -19,8 +20,25 @@ class SegmentDecision:
     text: str
     semantic_score: float
     language_guard_triggered: bool
+    source_confidence: float = 0.0
+    source_incomplete: bool = False
+    mixed_script_detected: bool = False
+    non_target_language_detected: bool = False
+    translation_too_similar_to_source: bool = False
+    semantic_drift_score: float = 1.0
     emit_interval_s: float = 0.0
     dropped_reason: str = ""
+
+
+@dataclass(slots=True)
+class SegmentSignals:
+    source_confidence: float
+    source_incomplete: bool
+    mixed_script_detected: bool
+    non_target_language_detected: bool
+    translation_too_similar_to_source: bool
+    semantic_score: float
+    semantic_drift_score: float
 
 
 class SegmentQualityGate:
@@ -92,8 +110,35 @@ class SegmentQualityGate:
         self.commit_max_age_seconds = read_float_env("COMMIT_MAX_AGE_SECONDS", 1.4)
         self.semantic_guard_enabled = read_bool_env("SEMANTIC_GUARD_ENABLED", True)
         self.semantic_guard_min_score = read_float_env("SEMANTIC_GUARD_MIN_SCORE", 0.78)
+        self.source_guard_enabled = read_bool_env("SOURCE_GUARD_ENABLED", True)
+        self.source_preview_min_confidence = read_float_env("SOURCE_PREVIEW_MIN_CONFIDENCE", 0.28)
+        self.source_commit_min_confidence = read_float_env("SOURCE_COMMIT_MIN_CONFIDENCE", 0.39)
+        self.drop_similar_to_source = read_bool_env("DROP_SIMILAR_TO_SOURCE_ENABLED", True)
         reject_path = (os.getenv("REJECT_PHRASES_PATH") or "./bench/reject_phrases_es.txt").strip()
         self.reject_patterns = self._load_reject_patterns(reject_path)
+
+    def inspect_segment(self, *, source_text: str, translated_text: str, target_language: str) -> SegmentSignals:
+        cleaned_source = self._sanitize(source_text)
+        cleaned_translation = self._sanitize(translated_text)
+        source_confidence = self.confidence_from_source(cleaned_source)
+        source_incomplete = self._source_incomplete(cleaned_source)
+        mixed_script_detected = self._contains_disallowed_script(cleaned_translation)
+        non_target_language_detected = self._language_guard(cleaned_translation, target_language)
+        translation_too_similar = self._looks_too_similar_to_source(cleaned_source, cleaned_translation)
+        semantic_score = self.semantic_score(
+            source_text=cleaned_source,
+            translated_text=cleaned_translation,
+            target_language=target_language,
+        )
+        return SegmentSignals(
+            source_confidence=source_confidence,
+            source_incomplete=source_incomplete,
+            mixed_script_detected=mixed_script_detected,
+            non_target_language_detected=non_target_language_detected,
+            translation_too_similar_to_source=translation_too_similar,
+            semantic_score=semantic_score,
+            semantic_drift_score=max(0.0, 1.0 - semantic_score),
+        )
 
     def decide_preview(
         self,
@@ -124,41 +169,98 @@ class SegmentQualityGate:
                 dropped_reason="reject_phrase",
             )
         words = self._word_count(cleaned)
-        semantic_score = self.semantic_score(source_text=source_text, translated_text=cleaned, target_language=target_language)
-        language_guard = self._language_guard(cleaned, target_language)
-        if language_guard:
+        signals = self.inspect_segment(
+            source_text=source_text,
+            translated_text=cleaned,
+            target_language=target_language,
+        )
+        if signals.non_target_language_detected:
             return SegmentDecision(
                 stage="drop",
                 route="drop",
                 text="",
-                semantic_score=semantic_score,
+                semantic_score=signals.semantic_score,
                 language_guard_triggered=True,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
                 dropped_reason="language_guard",
+            )
+        if self.source_guard_enabled and signals.source_confidence < self.source_preview_min_confidence:
+            return SegmentDecision(
+                stage="drop",
+                route="drop",
+                text="",
+                semantic_score=signals.semantic_score,
+                language_guard_triggered=False,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
+                dropped_reason="source_low_confidence",
+            )
+        if self.drop_similar_to_source and signals.translation_too_similar_to_source:
+            return SegmentDecision(
+                stage="drop",
+                route="drop",
+                text="",
+                semantic_score=signals.semantic_score,
+                language_guard_triggered=False,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
+                dropped_reason="translation_too_similar",
             )
         if words < self.preview_min_words and pending_age_s < self.preview_max_age_seconds:
             return SegmentDecision(
                 stage="drop",
                 route="drop",
                 text="",
-                semantic_score=semantic_score,
+                semantic_score=signals.semantic_score,
                 language_guard_triggered=False,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
                 dropped_reason="preview_too_short",
             )
-        if self.semantic_guard_enabled and semantic_score < (self.semantic_guard_min_score * 0.72):
+        if self.semantic_guard_enabled and signals.semantic_score < (self.semantic_guard_min_score * 0.72):
             return SegmentDecision(
                 stage="drop",
                 route="drop",
                 text="",
-                semantic_score=semantic_score,
+                semantic_score=signals.semantic_score,
                 language_guard_triggered=False,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
                 dropped_reason="preview_semantic_low",
             )
         return SegmentDecision(
             stage="preview",
             route=route,
             text=cleaned,
-            semantic_score=semantic_score,
+            semantic_score=signals.semantic_score,
             language_guard_triggered=False,
+            source_confidence=signals.source_confidence,
+            source_incomplete=signals.source_incomplete,
+            mixed_script_detected=signals.mixed_script_detected,
+            non_target_language_detected=signals.non_target_language_detected,
+            translation_too_similar_to_source=signals.translation_too_similar_to_source,
+            semantic_drift_score=signals.semantic_drift_score,
         )
 
     def decide_commit(
@@ -190,24 +292,69 @@ class SegmentQualityGate:
                 dropped_reason="reject_phrase",
             )
         words = self._word_count(cleaned)
-        semantic_score = self.semantic_score(source_text=source_text, translated_text=cleaned, target_language=target_language)
-        language_guard = self._language_guard(cleaned, target_language)
-        if language_guard:
+        signals = self.inspect_segment(
+            source_text=source_text,
+            translated_text=cleaned,
+            target_language=target_language,
+        )
+        if signals.non_target_language_detected:
             return SegmentDecision(
                 stage="drop",
                 route="drop",
                 text="",
-                semantic_score=semantic_score,
+                semantic_score=signals.semantic_score,
                 language_guard_triggered=True,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
                 dropped_reason="language_guard",
+            )
+        if self.source_guard_enabled and signals.source_confidence < self.source_commit_min_confidence:
+            return SegmentDecision(
+                stage="drop",
+                route="drop",
+                text="",
+                semantic_score=signals.semantic_score,
+                language_guard_triggered=False,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
+                dropped_reason="source_low_confidence",
+            )
+        if self.drop_similar_to_source and signals.translation_too_similar_to_source:
+            return SegmentDecision(
+                stage="drop",
+                route="drop",
+                text="",
+                semantic_score=signals.semantic_score,
+                language_guard_triggered=False,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
+                dropped_reason="translation_too_similar",
             )
         if words == 1:
             return SegmentDecision(
                 stage="drop",
                 route="drop",
                 text="",
-                semantic_score=semantic_score,
+                semantic_score=signals.semantic_score,
                 language_guard_triggered=False,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
                 dropped_reason="single_word_final",
             )
         if words < self.commit_min_words and pending_age_s < self.commit_max_age_seconds:
@@ -215,25 +362,43 @@ class SegmentQualityGate:
                 stage="drop",
                 route="drop",
                 text="",
-                semantic_score=semantic_score,
+                semantic_score=signals.semantic_score,
                 language_guard_triggered=False,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
                 dropped_reason="commit_too_short",
             )
-        if self.semantic_guard_enabled and semantic_score < self.semantic_guard_min_score:
+        if self.semantic_guard_enabled and signals.semantic_score < self.semantic_guard_min_score:
             return SegmentDecision(
                 stage="drop",
                 route="drop",
                 text="",
-                semantic_score=semantic_score,
+                semantic_score=signals.semantic_score,
                 language_guard_triggered=False,
+                source_confidence=signals.source_confidence,
+                source_incomplete=signals.source_incomplete,
+                mixed_script_detected=signals.mixed_script_detected,
+                non_target_language_detected=signals.non_target_language_detected,
+                translation_too_similar_to_source=signals.translation_too_similar_to_source,
+                semantic_drift_score=signals.semantic_drift_score,
                 dropped_reason="semantic_low",
             )
         return SegmentDecision(
             stage="commit",
             route=route,
             text=cleaned,
-            semantic_score=semantic_score,
+            semantic_score=signals.semantic_score,
             language_guard_triggered=False,
+            source_confidence=signals.source_confidence,
+            source_incomplete=signals.source_incomplete,
+            mixed_script_detected=signals.mixed_script_detected,
+            non_target_language_detected=signals.non_target_language_detected,
+            translation_too_similar_to_source=signals.translation_too_similar_to_source,
+            semantic_drift_score=signals.semantic_drift_score,
         )
 
     def confidence_from_source(self, source_text: str) -> float:
@@ -249,6 +414,17 @@ class SegmentQualityGate:
         length_term = min(1.0, len(cleaned) / 64.0)
         score = (0.55 * density) + (0.35 * length_term) + punctuation_bonus - connector_penalty
         return max(0.0, min(1.0, score))
+
+    def _source_incomplete(self, source_text: str) -> bool:
+        cleaned = self._sanitize(source_text)
+        if not cleaned:
+            return True
+        if re.search(r"[,:;/\\-]\s*$", cleaned):
+            return True
+        last_word_match = re.search(r"(\w+)\W*$", cleaned.lower())
+        if last_word_match and last_word_match.group(1) in self._ENGLISH_FUNCTION_WORDS.union(self._SPANISH_FUNCTION_WORDS):
+            return True
+        return not re.search(r"[.!?]\s*$", cleaned) and self._word_count(cleaned) < max(4, self.commit_min_words)
 
     def semantic_score(self, *, source_text: str, translated_text: str, target_language: str) -> float:
         source = self._sanitize(source_text)
@@ -305,6 +481,26 @@ class SegmentQualityGate:
         if len(lowered) < 4:
             return english_hits >= 2 and spanish_hits == 0
         return english_hits >= (spanish_hits * 2 + 2)
+
+    def _looks_too_similar_to_source(self, source_text: str, translated_text: str) -> bool:
+        source = self._sanitize(source_text).lower()
+        translated = self._sanitize(translated_text).lower()
+        if not source or not translated:
+            return False
+        source_words = re.findall(r"[a-z0-9áéíóúüñ]+", source)
+        translated_words = re.findall(r"[a-z0-9áéíóúüñ]+", translated)
+        if len(source_words) < 3 or len(translated_words) < 3:
+            return False
+        spanish_hits = sum(1 for token in translated_words if token in self._SPANISH_FUNCTION_WORDS)
+        if spanish_hits > 0:
+            return False
+        ratio = difflib.SequenceMatcher(
+            None,
+            " ".join(source_words),
+            " ".join(translated_words),
+            autojunk=False,
+        ).ratio()
+        return ratio >= 0.72
 
     @staticmethod
     def _looks_unstable(text: str) -> bool:
