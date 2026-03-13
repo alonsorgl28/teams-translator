@@ -12,16 +12,27 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
 
-# macOS: set Qt plugin path before any PyQt6 import so the cocoa plugin is found
-# regardless of the terminal context or shell environment.
-if sys.platform == "darwin" and "QT_QPA_PLATFORM_PLUGIN_PATH" not in os.environ:
+# macOS Sequoia: Qt cocoa plugin fails to load from venv due to code-signing
+# invalidation. Workaround: stage plugins to /tmp where macOS doesn't enforce
+# provenance checks, then point Qt there.
+if sys.platform == "darwin":
     try:
         import importlib.util as _ilu
+        import shutil
         _spec = _ilu.find_spec("PyQt6")
         if _spec and _spec.origin:
-            _plugins = Path(_spec.origin).parent / "Qt6" / "plugins" / "platforms"
-            if _plugins.is_dir():
-                os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(_plugins)
+            _qt6_base = Path(_spec.origin).parent / "Qt6"
+            _plugins_src = _qt6_base / "plugins" / "platforms"
+            _stage_dir = Path(f"/tmp/loro-qt-platforms-{os.getuid()}")
+            if _plugins_src.is_dir():
+                _stage_dir.mkdir(parents=True, exist_ok=True)
+                for _dylib in _plugins_src.glob("libq*.dylib"):
+                    _dst = _stage_dir / _dylib.name
+                    if not _dst.exists() or _dst.stat().st_mtime < _dylib.stat().st_mtime:
+                        shutil.copy2(_dylib, _dst)
+                os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(_stage_dir)
+            if "QT_PLUGIN_PATH" not in os.environ:
+                os.environ["QT_PLUGIN_PATH"] = str(_qt6_base / "plugins")
     except Exception:
         pass
 

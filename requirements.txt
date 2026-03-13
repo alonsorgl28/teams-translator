@@ -4,5 +4,7 @@ PyQt6==6.8.1
 PyQt6-Qt6==6.8.1
 python-dotenv>=1.0.0
 qasync>=0.27.1
+silero-vad>=6.0.0
 sounddevice>=0.4.6
+torch>=2.0.0
 websockets>=15.0.1

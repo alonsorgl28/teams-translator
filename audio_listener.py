@@ -15,6 +15,7 @@ import numpy as np
 import sounddevice as sd
 
 from config_utils import read_bool_env, read_float_env, read_int_env
+from vad import SileroVadSegmenter
 
 
 @dataclass
@@ -64,6 +65,10 @@ class SystemAudioListener:
         self._min_chunk_peak = read_float_env("AUDIO_MIN_CHUNK_PEAK", 0.012)
         self._speech_hold_chunks = max(0, read_int_env("AUDIO_SPEECH_HOLD_CHUNKS", 1))
         self._speech_hold_remaining = 0
+        self._vad_enabled = read_bool_env("VAD_ENABLED", False)
+        self._vad: Optional[SileroVadSegmenter] = None
+        if self._vad_enabled:
+            self._vad = SileroVadSegmenter(sample_rate=self._sample_rate)
         self._replay_audio_path = (os.getenv("REPLAY_AUDIO_PATH") or "").strip()
         self._replay_speed = max(0.05, read_float_env("REPLAY_SPEED", 1.0))
         self._replay_frame_seconds = max(0.02, read_float_env("REPLAY_FRAME_SECONDS", 0.04))
@@ -116,6 +121,11 @@ class SystemAudioListener:
         if self._replay_thread is not None and self._replay_thread.is_alive() and threading.current_thread() is not self._replay_thread:
             self._replay_thread.join(timeout=1.0)
         self._replay_thread = None
+        # Flush any remaining VAD speech buffer
+        if self._vad is not None:
+            remaining = self._vad.flush()
+            if remaining is not None and self._output_queue is not None:
+                self._loop.call_soon_threadsafe(self._publish_chunk, remaining, datetime.now())
         with self._buffer_lock:
             self._buffer = np.empty((0,), dtype=np.float32)
 
@@ -128,10 +138,35 @@ class SystemAudioListener:
             return
 
         mono = np.copy(indata[:, 0])
+
+        # Stream frames for realtime transcription (independent of VAD)
+        if self._stream_output_queue is not None and self._running:
+            stream_frame_data = mono.copy()
+            captured_at = datetime.now()
+            self._loop.call_soon_threadsafe(self._publish_stream_frame, stream_frame_data, captured_at)
+
+        if self._vad_enabled and self._vad is not None:
+            self._audio_callback_vad(mono)
+        else:
+            self._audio_callback_fixed(mono)
+
+    def _audio_callback_vad(self, mono: np.ndarray) -> None:
+        """VAD-based segmentation: emit chunks on speech boundaries."""
+        if self._output_queue is None:
+            return
+        with self._buffer_lock:
+            if not self._running:
+                return
+            completed_segments = self._vad.process_audio(mono)
+        for segment in completed_segments:
+            if self._running:
+                self._loop.call_soon_threadsafe(self._publish_chunk, segment, datetime.now())
+
+    def _audio_callback_fixed(self, mono: np.ndarray) -> None:
+        """Original fixed-time segmentation."""
         samples_per_chunk = max(1, int(self._sample_rate * self._chunk_seconds))
         samples_per_step = max(1, int(self._sample_rate * self._chunk_step_seconds))
         chunks_to_publish: list[tuple[np.ndarray, datetime]] = []
-        stream_frame = (mono.copy(), datetime.now())
         with self._buffer_lock:
             if not self._running:
                 return
@@ -144,10 +179,6 @@ class SystemAudioListener:
                     self._buffer = self._buffer[samples_per_step:]
                     chunks_to_publish.append((raw_chunk, datetime.now()))
 
-        if self._stream_output_queue is not None and self._running:
-            raw_stream, captured_at = stream_frame
-            self._loop.call_soon_threadsafe(self._publish_stream_frame, raw_stream, captured_at)
-
         for raw_chunk, captured_at in chunks_to_publish:
             if self._running:
                 self._loop.call_soon_threadsafe(self._publish_chunk, raw_chunk, captured_at)
@@ -158,9 +189,10 @@ class SystemAudioListener:
         if self._should_skip_silent_chunk(raw_chunk):
             return
         wav_bytes = self._to_wav_bytes(raw_chunk)
+        duration_s = raw_chunk.shape[0] / max(1, self._sample_rate)
         chunk = AudioChunk(
             captured_at=captured_at,
-            duration_s=self._chunk_seconds,
+            duration_s=duration_s,
             wav_bytes=wav_bytes,
         )
         try:
