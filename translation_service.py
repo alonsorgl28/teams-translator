@@ -657,20 +657,21 @@ class TechnicalTranslationService:
             )
             return self._sanitize(response.choices[0].message.content or "")
         accumulated = ""
-        async with self._client.chat.completions.stream(
+        stream = await self._client.chat.completions.create(
             model=model_name,
             temperature=0.0,
             messages=messages,
             max_tokens=self._max_completion_tokens,
-        ) as stream:
-            async for event in stream:
-                if not event.choices:
-                    continue
-                delta = event.choices[0].delta.content
-                if delta:
-                    accumulated += delta
-                    if len(accumulated.split()) >= 2:
-                        await preview_callback(accumulated.strip())
+            stream=True,
+        )
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content
+            if delta:
+                accumulated += delta
+                if len(accumulated.split()) >= 2:
+                    await preview_callback(accumulated.strip())
         return self._sanitize(accumulated)
 
     @staticmethod
