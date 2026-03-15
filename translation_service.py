@@ -656,23 +656,32 @@ class TechnicalTranslationService:
                 max_tokens=self._max_completion_tokens,
             )
             return self._sanitize(response.choices[0].message.content or "")
-        accumulated = ""
-        stream = await self._client.chat.completions.create(
-            model=model_name,
-            temperature=0.0,
-            messages=messages,
-            max_tokens=self._max_completion_tokens,
-            stream=True,
-        )
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                accumulated += delta
-                if len(accumulated.split()) >= 2:
-                    await preview_callback(accumulated.strip())
-        return self._sanitize(accumulated)
+        try:
+            accumulated = ""
+            stream = await self._client.chat.completions.create(
+                model=model_name,
+                temperature=0.0,
+                messages=messages,
+                max_tokens=self._max_completion_tokens,
+                stream=True,
+            )
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    accumulated += delta
+                    if len(accumulated.split()) >= 2:
+                        await preview_callback(accumulated.strip())
+            return self._sanitize(accumulated)
+        except Exception:  # noqa: BLE001 - fallback to batch if streaming fails
+            response = await self._client.chat.completions.create(
+                model=model_name,
+                temperature=0.0,
+                messages=messages,
+                max_tokens=self._max_completion_tokens,
+            )
+            return self._sanitize(response.choices[0].message.content or "")
 
     @staticmethod
     def _extract_numeric_tokens(text: str) -> list[str]:
