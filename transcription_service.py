@@ -220,8 +220,8 @@ class RealtimeTranscriptionService:
         if not key:
             raise RuntimeError("OPENAI_API_KEY is required for realtime transcription.")
         self._client = AsyncOpenAI(api_key=key)
-        primary_session_model = os.getenv("REALTIME_SESSION_MODEL", "gpt-realtime-mini").strip() or "gpt-realtime-mini"
-        fallback_session_model = os.getenv("REALTIME_SESSION_FALLBACK_MODEL", "gpt-realtime").strip() or "gpt-realtime"
+        primary_session_model = os.getenv("REALTIME_SESSION_MODEL", "gpt-4o-mini-transcribe").strip() or "gpt-4o-mini-transcribe"
+        fallback_session_model = os.getenv("REALTIME_SESSION_FALLBACK_MODEL", "gpt-4o-transcribe").strip() or "gpt-4o-transcribe"
         self._session_models = [primary_session_model]
         if fallback_session_model and fallback_session_model not in self._session_models:
             self._session_models.append(fallback_session_model)
@@ -265,7 +265,7 @@ class RealtimeTranscriptionService:
                 model_name = self._models[model_index]
                 connection = None
                 try:
-                    connection = await self._client.realtime.connect(model=session_model_name).enter()
+                    connection = await self._client.realtime.connect(model=session_model_name, extra_query={"intent": "transcription"}).enter()
                     transcription_config = {"model": model_name}
                     if self._language_hint:
                         transcription_config["language"] = self._language_hint

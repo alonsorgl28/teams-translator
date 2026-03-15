@@ -12,25 +12,24 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
 
-# macOS Sequoia: Qt cocoa plugin fails to load from venv due to code-signing
-# invalidation. Workaround: stage plugins to /tmp where macOS doesn't enforce
-# provenance checks, then point Qt there.
+# macOS Sequoia: Qt cocoa plugin may fail due to code-signing invalidation.
+# Fix: re-sign plugins in-place and point Qt to the original venv path.
+# Staging to /tmp broke @rpath resolution (QtGui/QtCore not found from /tmp).
 if sys.platform == "darwin":
     try:
         import importlib.util as _ilu
-        import shutil
+        import subprocess
         _spec = _ilu.find_spec("PyQt6")
         if _spec and _spec.origin:
             _qt6_base = Path(_spec.origin).parent / "Qt6"
             _plugins_src = _qt6_base / "plugins" / "platforms"
-            _stage_dir = Path(f"/tmp/loro-qt-platforms-{os.getuid()}")
             if _plugins_src.is_dir():
-                _stage_dir.mkdir(parents=True, exist_ok=True)
                 for _dylib in _plugins_src.glob("libq*.dylib"):
-                    _dst = _stage_dir / _dylib.name
-                    if not _dst.exists() or _dst.stat().st_mtime < _dylib.stat().st_mtime:
-                        shutil.copy2(_dylib, _dst)
-                os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(_stage_dir)
+                    subprocess.run(
+                        ["codesign", "--sign", "-", "--force", str(_dylib)],
+                        capture_output=True,
+                    )
+                os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(_plugins_src)
             if "QT_PLUGIN_PATH" not in os.environ:
                 os.environ["QT_PLUGIN_PATH"] = str(_qt6_base / "plugins")
     except Exception:
@@ -166,9 +165,9 @@ class MeetingTranslatorController:
     DUPLICATE_SEQUENCE_RATIO = 0.995
     DUPLICATE_MAX_WORD_DELTA = 0
     MIN_WORDS_ON_AGE_FLUSH = 3
-    STALE_EMIT_RELAX_FACTOR = 2.0
+    STALE_EMIT_RELAX_FACTOR = 1.5
     FIRST_EMIT_MIN_CHARS = 12
-    MIN_STALENESS_SECONDS_LIVE = 6.0
+    MIN_STALENESS_SECONDS_LIVE = 3.0
     MIN_CHUNK_STEP_SECONDS_LIVE = 0.85
     MAX_CHUNK_SECONDS_LIVE = 1.0
     STARTUP_LISTENER_VALIDATION_SECONDS = 0.8
@@ -399,10 +398,7 @@ class MeetingTranslatorController:
             self.max_segment_staleness_seconds = configured_staleness
         else:
             self.max_segment_staleness_seconds = max(configured_staleness, self.MIN_STALENESS_SECONDS_LIVE)
-        self.max_emit_staleness_seconds = self.max_segment_staleness_seconds * max(
-            self.STALE_EMIT_RELAX_FACTOR,
-            2.0,
-        )
+        self.max_emit_staleness_seconds = self.max_segment_staleness_seconds * self.STALE_EMIT_RELAX_FACTOR
         self.transcriber: Optional[WhisperTranscriptionService] = None
         self.realtime_transcriber: Optional[RealtimeTranscriptionService] = None
         self.translator: Optional[TechnicalTranslationService] = None
@@ -959,6 +955,7 @@ class MeetingTranslatorController:
                     source_text,
                     target_language=self.target_language,
                     confidence_score=confidence_score,
+                    preview_callback=self._handle_translation_preview,
                 )
                 fallback_reason = self.translator.last_error or ""  # type: ignore[union-attr]
                 pending_age_s = (datetime.now() - source_metrics["captured_at"]).total_seconds()
@@ -1304,6 +1301,11 @@ class MeetingTranslatorController:
             return
         self._source_preview_active = True
         self.ui.set_live_preview(cleaned)
+
+    async def _handle_translation_preview(self, partial_text: str) -> None:
+        if not partial_text or not self.running:
+            return
+        self.ui.set_live_preview(partial_text)
 
     def _on_toggle_listening(self, should_listen: bool) -> None:
         self._schedule_toggle(should_listen)
@@ -2421,6 +2423,11 @@ class MeetingTranslatorController:
 
 
 def main() -> None:
+    # When running as a PyInstaller .app bundle, look for .env in the folder
+    # that contains the .app (i.e. next to Loro.app, not inside it).
+    if getattr(sys, "frozen", False):
+        app_bundle_dir = Path(sys.executable).parent.parent.parent.parent
+        load_dotenv(app_bundle_dir / ".env")
     load_dotenv()
     log_level_name = (os.getenv("LOG_LEVEL", "INFO") or "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)

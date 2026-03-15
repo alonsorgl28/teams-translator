@@ -1,17 +1,17 @@
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python3.11"
-QT_BASE="$SCRIPT_DIR/.venv/lib/python3.11/site-packages/PyQt6/Qt6"
-QT_PLATFORM_SRC="$QT_BASE/plugins/platforms"
-QT_PLATFORM_STAGE="/tmp/loro-qt-platforms-${UID:-$(id -u)}"
+UV="/opt/homebrew/bin/uv"
 
-# Work around platform plugin discovery failures from this filesystem by staging plugins to /tmp.
-mkdir -p "$QT_PLATFORM_STAGE"
-cp "$QT_PLATFORM_SRC"/libq*.dylib "$QT_PLATFORM_STAGE"/ 2>/dev/null
+# Auto-repair venv if Python or dotenv is missing (uv es más robusto que venv nativo)
+if ! "$VENV_PYTHON" -c "import dotenv" 2>/dev/null; then
+  echo "[Loro] venv roto — recreando con uv..."
+  cd "$SCRIPT_DIR"
+  "$UV" venv .venv --python 3.11 --clear
+  "$UV" pip install -r requirements.txt
+  echo "[Loro] venv listo"
+fi
 
-export QT_QPA_PLATFORM_PLUGIN_PATH="$QT_PLATFORM_STAGE"
-export QT_PLUGIN_PATH="$QT_BASE/plugins"
-export DYLD_FALLBACK_LIBRARY_PATH="$QT_BASE/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
 if [[ -z "${LANG:-}" || "${LANG}" == C* ]]; then
   export LANG="en_US.UTF-8"
 fi

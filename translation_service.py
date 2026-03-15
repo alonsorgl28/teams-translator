@@ -6,7 +6,7 @@ import os
 import re
 from collections import deque
 from pathlib import Path
-from typing import Final, Optional
+from typing import Awaitable, Callable, Final, Optional
 
 from openai import APIStatusError, AsyncOpenAI
 
@@ -227,13 +227,19 @@ class TechnicalTranslationService:
         target_language: str = "Spanish",
         confidence_score: float = 1.0,
         force_premium: bool = False,
+        preview_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> tuple[str, TranslationRoute]:
         route = self._select_route(confidence_score, force_premium)
         self._segments_routed += 1
         if route == "premium":
             self._premium_segments += 1
         model_override = self._premium_model if route == "premium" else None
-        translated = await self.translate_text(text, target_language=target_language, model_override=model_override)
+        translated = await self.translate_text(
+            text,
+            target_language=target_language,
+            model_override=model_override,
+            preview_callback=preview_callback,
+        )
         return translated, route
 
     async def translate_text(
@@ -242,6 +248,7 @@ class TechnicalTranslationService:
         target_language: str = "Spanish",
         *,
         model_override: Optional[str] = None,
+        preview_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
         self.last_error = None
         cleaned = self._sanitize(text)
@@ -279,6 +286,7 @@ class TechnicalTranslationService:
                     session_terms=session_terms,
                     domain_glossary=domain_glossary,
                     model_override=model_override,
+                    preview_callback=preview_callback,
                 )
             if self._is_refusal_like(translated):
                 retry = await self._translate_literal(
@@ -408,6 +416,7 @@ class TechnicalTranslationService:
         session_terms: str,
         domain_glossary: list[dict[str, str]],
         model_override: Optional[str] = None,
+        preview_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
         numbers_line = ", ".join(number_tokens) if number_tokens else "None"
         system_prompt = (
@@ -442,7 +451,7 @@ class TechnicalTranslationService:
             prompt_lines.append(f"Recent Spanish context:\n{recent_translation_context}")
         prompt_lines.append(f"Text:\n{source_text}")
         user_prompt = "\n\n".join(prompt_lines)
-        return await self._chat(user_prompt, system_prompt, model_override=model_override)
+        return await self._chat(user_prompt, system_prompt, model_override=model_override, preview_callback=preview_callback)
 
     async def _translate_literal(
         self,
@@ -596,6 +605,7 @@ class TechnicalTranslationService:
         system_prompt: Optional[str] = None,
         *,
         model_override: Optional[str] = None,
+        preview_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
         messages = []
         if system_prompt:
@@ -604,14 +614,9 @@ class TechnicalTranslationService:
         last_exc: Optional[Exception] = None
         if model_override:
             try:
-                response = await self._client.chat.completions.create(
-                    model=model_override,
-                    temperature=0.0,
-                    messages=messages,
-                    max_tokens=self._max_completion_tokens,
+                return await self._chat_single(
+                    model_override, messages, preview_callback=preview_callback
                 )
-                content = response.choices[0].message.content or ""
-                return self._sanitize(content)
             except APIStatusError as exc:
                 last_exc = exc
                 if exc.status_code not in (400, 404):
@@ -621,14 +626,9 @@ class TechnicalTranslationService:
         while self._active_model_index < len(self._models):
             model_name = self._models[self._active_model_index]
             try:
-                response = await self._client.chat.completions.create(
-                    model=model_name,
-                    temperature=0.0,
-                    messages=messages,
-                    max_tokens=self._max_completion_tokens,
+                return await self._chat_single(
+                    model_name, messages, preview_callback=preview_callback
                 )
-                content = response.choices[0].message.content or ""
-                return self._sanitize(content)
             except APIStatusError as exc:
                 last_exc = exc
                 # Promote to fallback model once and keep it for subsequent requests.
@@ -640,6 +640,38 @@ class TechnicalTranslationService:
                 last_exc = exc
                 break
         raise RuntimeError(f"Translation API failed with all configured models: {last_exc}") from last_exc
+
+    async def _chat_single(
+        self,
+        model_name: str,
+        messages: list,
+        *,
+        preview_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> str:
+        if preview_callback is None:
+            response = await self._client.chat.completions.create(
+                model=model_name,
+                temperature=0.0,
+                messages=messages,
+                max_tokens=self._max_completion_tokens,
+            )
+            return self._sanitize(response.choices[0].message.content or "")
+        accumulated = ""
+        async with self._client.chat.completions.stream(
+            model=model_name,
+            temperature=0.0,
+            messages=messages,
+            max_tokens=self._max_completion_tokens,
+        ) as stream:
+            async for event in stream:
+                if not event.choices:
+                    continue
+                delta = event.choices[0].delta.content
+                if delta:
+                    accumulated += delta
+                    if len(accumulated.split()) >= 2:
+                        await preview_callback(accumulated.strip())
+        return self._sanitize(accumulated)
 
     @staticmethod
     def _extract_numeric_tokens(text: str) -> list[str]:
