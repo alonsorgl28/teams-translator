@@ -1,6 +1,6 @@
 # LORO — Compact Context
 > Cargar al inicio de cada sesión junto con CLAUDE.md.
-> Última actualización: 2026-03-01
+> Última actualización: 2026-03-12
 
 ---
 
@@ -16,7 +16,8 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 
 | Módulo | Responsabilidad | Líneas aprox. |
 |--------|----------------|---------------|
-| `audio_listener.py` | Captura chunks de audio del sistema via sounddevice. Requiere BlackHole (mac) / VB-Cable (win). | ~200 |
+| `audio_listener.py` | Captura chunks de audio del sistema via sounddevice. Soporta VAD (Silero) o chunks fijos. Requiere BlackHole (mac) / VB-Cable (win). | ~340 |
+| `vad.py` | Voice Activity Detection con Silero VAD. Segmenta audio por boundaries de voz en vez de tiempo fijo. | ~170 |
 | `transcription_service.py` | STT via OpenAI. Primario: `gpt-4o-mini-transcribe`. Fallback: `whisper-1`. Batch + experimental streaming. | ~250 |
 | `translation_service.py` | Traducción via `gpt-4o-mini`. Preserva términos técnicos y números. Context window corto. | ~300 |
 | `overlay_ui.py` | PyQt6. Dos modos: `cinema` (subtítulos grandes) y `list` (scroll). Always-on-top, draggable, resize. | ~900 |
@@ -35,8 +36,9 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 | `SUBTITLE_MODE` | cinema | `cinema` (2 líneas grandes) o `list` (scroll) |
 | `TRANSCRIPTION_MODEL` | gpt-4o-mini-transcribe | Modelo STT primario |
 | `TRANSLATION_MODEL` | gpt-4o-mini | Modelo de traducción |
-| `CHUNK_SECONDS` | 1.4 | Tamaño de chunk de audio en segundos |
-| `CHUNK_STEP_SECONDS` | 0.8 | Paso entre chunks (overlap) |
+| `VAD_ENABLED` | 0 | Activar segmentación por voz (Silero VAD) en vez de chunks fijos |
+| `CHUNK_SECONDS` | 1.4 | Tamaño de chunk de audio en segundos (solo si VAD_ENABLED=0) |
+| `CHUNK_STEP_SECONDS` | 0.8 | Paso entre chunks (overlap, solo si VAD_ENABLED=0) |
 | `MAX_SEGMENT_STALENESS_SECONDS` | 3.0 | Descarta segmentos viejos antes de procesar |
 | `FILTER_GIBBERISH` | 1 | Filtra transcripciones sin sentido |
 | `DEBUG_MODE` | 0 | Logging verbose |
@@ -49,13 +51,15 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 
 | Área | Estado | Notas |
 |------|--------|-------|
-| Audio capture | ✅ Estable | BlackHole requerido en macOS |
+| Audio capture | ✅ Estable | BlackHole requerido en macOS. VAD disponible (VAD_ENABLED=1) |
 | STT | 🟡 Streaming activado | REALTIME_TRANSCRIPTION_ENABLED=1, fallback a batch automático |
 | Traducción | ✅ Estable | gpt-4o-mini, términos técnicos OK |
 | Overlay UI | ✅ Estable | Inspirado en Seagull, modo cinema/list |
-| Latencia primer subtítulo | 🔴 Alta | Cuello principal del pipeline |
+| macOS cocoa plugin | ✅ Resuelto | Fix en main.py: staging plugins Qt a /tmp (macOS Sequoia) |
+| BUG-23 (mezcla idiomas) | 🟡 Parcial | VAD lo elimina pero añade latencia. Necesita instrumentación |
+| Latencia primer subtítulo | 🟡 Mejorada | De 46s a 6s. Inter-segmento: inconsistente, requiere tuning con datos |
 | Packaging (PyInstaller) | ⬜ Pendiente | F07/F08 no iniciados |
-| Monetización | ⬜ Pendiente | Pricing no decidido, sin Stripe |
+| Monetización | ⬜ Pendiente | $15/mes + 7 días gratis, Dodo Payments |
 
 ---
 
@@ -99,11 +103,11 @@ BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22
 
 ## 7. Próximos pasos inmediatos
 
-1. **BUG-06** — agregar timeout a `Queue.get()` para evitar workers colgados
-2. **BUG-08** — reemplazar `except Exception` genérico con manejo específico
-3. **Latencia** — evaluar resultados del streaming STT activado (REALTIME_TRANSCRIPTION_ENABLED=1)
-4. **BUG-09** — agregar lock a `full_transcript_buffer` para evitar crash en export
-5. **F07** — packaging PyInstaller macOS
+1. **Instrumentar pipeline** — agregar timestamps por etapa (audio→STT→traducción→render) para diagnóstico cuantitativo
+2. **Medir con datos** — correr 60s de video, parsear logs, identificar cuello de botella real
+3. **Decidir CHUNK params** — valores actuales: 2.0/1.5 (en .env). Originales: 1.05/0.80. Decidir con datos.
+4. **BUG-23** — confirmar resolución con prueba instrumentada
+5. **F07** — packaging PyInstaller macOS (después de estabilizar latencia)
 
 ---
 
@@ -126,10 +130,6 @@ rm -rf .venv
 /opt/homebrew/bin/python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-# Fix firma de plugins Qt en macOS Sequoia:
-xcrun install_name_tool -add_rpath \
-  .venv/lib/python3.11/site-packages/PyQt6/Qt6/lib \
-  .venv/lib/python3.11/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib
-codesign --force --sign - \
-  .venv/lib/python3.11/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib
 ```
+> **Nota:** El fix de cocoa ya está integrado en main.py (staging de plugins Qt a /tmp).
+> Ya NO es necesario correr `install_name_tool` ni `codesign` manualmente.
