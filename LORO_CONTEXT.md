@@ -1,6 +1,6 @@
 # LORO — Compact Context
 > Cargar al inicio de cada sesión junto con CLAUDE.md.
-> Última actualización: 2026-03-12
+> Última actualización: 2026-03-16
 
 ---
 
@@ -47,7 +47,7 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 
 ## 4. Estado actual — Mar 2026
 
-**Progreso:** 91% (F8–F9 en curso, F10 pendiente)
+**Progreso:** 92% (F8–F9 en curso, F10 pendiente)
 
 | Área | Estado | Notas |
 |------|--------|-------|
@@ -57,7 +57,9 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 | Overlay UI | ✅ Estable | Inspirado en Seagull, modo cinema/list |
 | macOS cocoa plugin | ✅ Resuelto | Fix en main.py: staging plugins Qt a /tmp (macOS Sequoia) |
 | BUG-23 (mezcla idiomas) | 🟡 Parcial | VAD lo elimina pero añade latencia. Necesita instrumentación |
-| Latencia primer subtítulo | 🟡 Mejorada | De 46s a 6s. Inter-segmento: inconsistente, requiere tuning con datos |
+| Latencia primer subtítulo | ✅ Medida | avg=2.35s, P95=3.17s. STT es el cuello (53%). Datos en session_metrics.jsonl |
+| Drop rate | ✅ Mejorado | SOURCE_COMMIT_MIN_CONFIDENCE bajado 0.39→0.28. 14/17 drops innecesarios rescatados |
+| Pipeline analytics | ✅ Nuevo | parse_pipeline.py — breakdown por etapa, análisis de gaps, modo --compare |
 | Packaging (PyInstaller) | ⬜ Pendiente | F07/F08 no iniciados |
 | Monetización | ⬜ Pendiente | $15/mes + 7 días gratis, Dodo Payments |
 
@@ -103,33 +105,41 @@ BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22
 
 ## 7. Próximos pasos inmediatos
 
-1. **Instrumentar pipeline** — agregar timestamps por etapa (audio→STT→traducción→render) para diagnóstico cuantitativo
-2. **Medir con datos** — correr 60s de video, parsear logs, identificar cuello de botella real
-3. **Decidir CHUNK params** — valores actuales: 2.0/1.5 (en .env). Originales: 1.05/0.80. Decidir con datos.
-4. **BUG-23** — confirmar resolución con prueba instrumentada
-5. **F07** — packaging PyInstaller macOS (después de estabilizar latencia)
+1. **Correr sesión real con nuevo threshold** — validar que el drop rate baja y no aparece basura visible en la UI
+2. **Comparar VAD on vs off** — correr sesión con `VAD_ENABLED=1`, guardar JSONL, comparar con `python parse_pipeline.py --compare`
+3. **BUG-23** — confirmar resolución con prueba instrumentada (VAD elimina mezcla de idiomas)
+4. **BUG-06 / BUG-08 / BUG-09** — bugs P1 aún sin tocar
+5. **F07** — packaging PyInstaller macOS
 
 ---
 
 ## 8. Cómo correr
 
 ```bash
-cd "/Users/hola/Documents/New project"
-source .venv/bin/activate
-python main.py
+loro
 ```
+> Alias configurado en `~/.zshrc`. Equivale a:
+> `source ~/loro-venv/bin/activate && cd "/Users/hola/Documents/New project" && python3.11 main.py`
 
 **Prerequisitos macOS:**
 - **BlackHole 2ch** instalado y configurado como output del sistema
-- **Python 3.11 via Homebrew** (`/opt/homebrew/bin/python3.11`) — el venv DEBE crearse con esta versión
+- **Python 3.11 via Homebrew** (`/opt/homebrew/bin/python3.11`)
 - **PyQt6 6.8.1** — pinado en `requirements.txt`
+- **venv en `~/loro-venv`** — NO dentro del proyecto (el espacio en "New project" rompe pip)
 
 **Si el venv se corrompe o hay que recrearlo:**
 ```bash
-rm -rf .venv
-/opt/homebrew/bin/python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+rm -rf ~/loro-venv
+/opt/homebrew/bin/python3.11 -m venv ~/loro-venv
+source ~/loro-venv/bin/activate
+python3.11 -m pip install -r "/Users/hola/Documents/New project/requirements.txt"
 ```
-> **Nota:** El fix de cocoa ya está integrado en main.py (staging de plugins Qt a /tmp).
-> Ya NO es necesario correr `install_name_tool` ni `codesign` manualmente.
+
+**Analizar métricas de pipeline:**
+```bash
+cd "/Users/hola/Documents/New project" && python3.11 parse_pipeline.py
+# Comparar dos sesiones:
+python3.11 parse_pipeline.py --compare reports/sesion_a.jsonl reports/sesion_b.jsonl
+```
+
+> **Nota:** El fix de cocoa ya está integrado en main.py. No es necesario `install_name_tool` ni `codesign` manual.

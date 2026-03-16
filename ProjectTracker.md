@@ -40,12 +40,12 @@
   - `/Users/hola/Documents/New project/tests/` (audio buffer/UI/dedup/metrics/translation/visualización)
 
 ## Backlog inmediato (siguiente iteración)
-1. Sustituir el camino operativo principal de STT por una vía incremental/streaming soportada; hoy el default sigue siendo batch y eso limita la experiencia tipo Seagull.
-2. Reducir `time-to-first-subtitle` y `time-to-first-final-translation` con preview temprano estable y flush inicial más agresivo.
-3. Corregir segmentación/contexto de traducción para evitar frases semánticamente rotas en fragmentos cortos.
-4. Definir benchmark fijo de 60-90s y usarlo para medir `AVG`, `P95`, primer subtítulo y calidad de traducción.
-5. Ejecutar validación real F8 en Teams cuando el pipeline de latencia esté más estable.
-6. Cerrar selector de dispositivo de audio en UI con detección en vivo y validación de apply/restart.
+1. Validar drop rate con nuevo threshold (SOURCE_COMMIT_MIN_CONFIDENCE=0.28) en sesión real — verificar que no aparece basura en UI.
+2. Comparar VAD on vs off con `parse_pipeline.py --compare` — cuantificar impacto en latencia y drops.
+3. BUG-23 — confirmar resolución definitiva con prueba instrumentada.
+4. BUG-06 / BUG-08 / BUG-09 — bugs P1 pendientes.
+5. F07/F08 — packaging PyInstaller macOS + Windows.
+6. Cerrar selector de dispositivo de audio en UI.
 
 ## Registro de cambios (resumen)
 - 2026-02-14: Se completó MVP funcional base y se inició fase F8 (validación E2E real).
@@ -56,3 +56,4 @@
 - 2026-03-01: La UI quedó mucho más cerca de la referencia visual tipo Seagull; el estado real del proyecto sigue marcado por latencia inicial de subtítulos, STT aún mayormente batch y necesidad de mejor segmentación antes de traducción.
 - 2026-03-01 (sesión 2): BUG-07 y BUG-13 resueltos. Fix crítico de entorno: migración a Python 3.11 (Homebrew) + PyQt6 6.8.1 + patch RPATH/codesign para cocoa plugin en macOS Sequoia. Streaming STT activado por default. Tuning de .env: TRANSLATION_MAX_TOKENS 200, MERGE_MIN_WORDS 5, MIN_EMIT_WORDS 4.
 - 2026-03-12: Silero VAD implementado (vad.py + audio_listener.py). Fix permanente de cocoa crash (staging plugins Qt a /tmp en main.py). Latencia primer subtítulo: 46s→6s. BUG-23 parcialmente resuelto (VAD elimina mezcla pero añade latencia). Próximo: instrumentar pipeline para diagnóstico cuantitativo. Commit `e4a5e0d`.
+- 2026-03-16: Pipeline analizado con datos reales (93 registros). Latencia avg=2.35s P95=3.17s. STT=53% del tiempo. Drop rate reducido: SOURCE_COMMIT_MIN_CONFIDENCE 0.39→0.28 (14/17 drops innecesarios rescatados). Gaps largos diagnosticados como silencios naturales (no bugs). Nuevo script `parse_pipeline.py` con modo --compare para VAD off vs on. venv movido a `~/loro-venv` (fix path con espacios). Alias `loro` configurado. Commit `0441ff9`.
