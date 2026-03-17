@@ -1,6 +1,6 @@
 # LORO — Compact Context
 > Cargar al inicio de cada sesión junto con CLAUDE.md.
-> Última actualización: 2026-03-16
+> Última actualización: 2026-03-16 (sesión 17)
 
 ---
 
@@ -18,7 +18,7 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 |--------|----------------|---------------|
 | `audio_listener.py` | Captura chunks de audio del sistema via sounddevice. Soporta VAD (Silero) o chunks fijos. Requiere BlackHole (mac) / VB-Cable (win). | ~340 |
 | `vad.py` | Voice Activity Detection con Silero VAD. Segmenta audio por boundaries de voz en vez de tiempo fijo. | ~170 |
-| `transcription_service.py` | STT via OpenAI. Primario: `gpt-4o-mini-transcribe`. Fallback: `whisper-1`. Batch + experimental streaming. | ~250 |
+| `transcription_service.py` | STT via OpenAI. Primario: `gpt-4o-mini-transcribe`. Fallback: `whisper-1`. Batch (activo) + Realtime (BUG-24 pendiente modelo). | ~480 |
 | `translation_service.py` | Traducción via `gpt-4o-mini`. Preserva términos técnicos y números. Context window corto. | ~300 |
 | `overlay_ui.py` | PyQt6. Dos modos: `cinema` (subtítulos grandes) y `list` (scroll). Always-on-top, draggable, resize. | ~900 |
 | `main.py` | Orquestación async (qasync). Dedup, rolling buffer 60min, control de backlog, métricas. | ~600 |
@@ -29,37 +29,44 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 
 ## 3. Variables de entorno clave
 
-| Variable | Default | Qué controla |
-|----------|---------|-------------|
+| Variable | Valor actual (.env) | Qué controla |
+|----------|---------------------|-------------|
 | `OPENAI_API_KEY` | — | Requerida. STT + traducción. |
-| `SYSTEM_AUDIO_DEVICE` | auto | Nombre del dispositivo loopback (BlackHole 2ch / CABLE Output) |
+| `SYSTEM_AUDIO_DEVICE` | BlackHole 2ch | Nombre del dispositivo loopback |
 | `SUBTITLE_MODE` | cinema | `cinema` (2 líneas grandes) o `list` (scroll) |
-| `TRANSCRIPTION_MODEL` | gpt-4o-mini-transcribe | Modelo STT primario |
+| `TRANSCRIPTION_MODEL` | gpt-4o-mini-transcribe | Modelo STT primario (batch) |
 | `TRANSLATION_MODEL` | gpt-4o-mini | Modelo de traducción |
-| `VAD_ENABLED` | 0 | Activar segmentación por voz (Silero VAD) en vez de chunks fijos |
-| `CHUNK_SECONDS` | 1.4 | Tamaño de chunk de audio en segundos (solo si VAD_ENABLED=0) |
-| `CHUNK_STEP_SECONDS` | 0.8 | Paso entre chunks (overlap, solo si VAD_ENABLED=0) |
-| `MAX_SEGMENT_STALENESS_SECONDS` | 3.0 | Descarta segmentos viejos antes de procesar |
+| `VAD_ENABLED` | 0 | Activar segmentación por voz (Silero VAD) |
+| `CHUNK_SECONDS` | 1.8 | Tamaño de chunk de audio en segundos |
+| `CHUNK_STEP_SECONDS` | 1.8 | Paso entre chunks (sin overlap actualmente) |
+| `MAX_SEGMENT_STALENESS_SECONDS` | 1.0 | Descarta segmentos viejos antes de procesar |
+| `REALTIME_TRANSCRIPTION_ENABLED` | 1 | Activa modo streaming palabra por palabra (BUG-24: falla por REALTIME_SESSION_MODEL incorrecto) |
+| `REALTIME_SESSION_MODEL` | gpt-4o-mini-transcribe | ⚠️ INCORRECTO — debe ser `gpt-4o-realtime-preview` |
+| `TRANSLATION_CONTEXT_TURNS` | 1 | Turnos de contexto pasados al modelo de traducción |
+| `PREMIUM_TRIGGER_SCORE` | 1.5 | Score mínimo para usar modelo premium |
+| `PREMIUM_MAX_RATIO` | 0.10 | Cap de segmentos premium por sesión (10%) |
 | `FILTER_GIBBERISH` | 1 | Filtra transcripciones sin sentido |
-| `DEBUG_MODE` | 0 | Logging verbose |
+| `DEBUG_MODE` | 1 | Logging verbose |
 
 ---
 
-## 4. Estado actual — Mar 2026
+## 4. Estado actual — Mar 2026 (sesión 17)
 
-**Progreso:** 92% (F8–F9 en curso, F10 pendiente)
+**Progreso:** 93% (F9 en curso, F10 pendiente)
 
 | Área | Estado | Notas |
 |------|--------|-------|
 | Audio capture | ✅ Estable | BlackHole requerido en macOS. VAD disponible (VAD_ENABLED=1) |
-| STT | 🟡 Streaming activado | REALTIME_TRANSCRIPTION_ENABLED=1, fallback a batch automático |
-| Traducción | ✅ Estable | gpt-4o-mini, términos técnicos OK |
-| Overlay UI | ✅ Estable | Inspirado en Seagull, modo cinema/list |
-| macOS cocoa plugin | ✅ Resuelto | Fix en main.py: staging plugins Qt a /tmp (macOS Sequoia) |
-| BUG-23 (mezcla idiomas) | 🟡 Parcial | VAD lo elimina pero añade latencia. Necesita instrumentación |
-| Latencia primer subtítulo | ✅ Medida | avg=2.35s, P95=3.17s. STT es el cuello (53%). Datos en session_metrics.jsonl |
-| Drop rate | ✅ Mejorado | SOURCE_COMMIT_MIN_CONFIDENCE bajado 0.39→0.28. 14/17 drops innecesarios rescatados |
-| Pipeline analytics | ✅ Nuevo | parse_pipeline.py — breakdown por etapa, análisis de gaps, modo --compare |
+| STT batch | ✅ Estable | 0.0% issue rate, 0 drops en Run 5 y Run 6. avg latencia STT ~0.8s |
+| STT realtime | 🔴 BUG-24 | Fix de protocolo aplicado (transcription_session.update ✅). Pendiente: REALTIME_SESSION_MODEL debe ser gpt-4o-realtime-preview |
+| Traducción | ✅ Estable | gpt-4o-mini. TRANSLATION_CONTEXT_TURNS=1 (3→1 reduce repetición de contexto) |
+| Overlay UI | ✅ Estable | Modo cinema/list. Siempre on-top, draggable |
+| macOS cocoa plugin | ✅ Resuelto | xattr quarantine + codesign en main.py y run.sh |
+| Latencia end-to-end | ✅ Medida (Run 6) | avg=2.04s, p50=1.73s, p95=3.26s, max=3.40s |
+| Stale drops (emit) | 🟡 4 por sesión | age_s>3.51s en chunks lentos. Fix: subir STALE_EMIT_RELAX_FACTOR 1.17→1.35 |
+| Premium ratio | 🟡 13.5% (cap 10%) | Cap no está funcionando correctamente. Pendiente revisar lógica |
+| Chunk size | ✅ Fijo | CHUNK_SECONDS=1.8 (cap MAX_CHUNK_SECONDS_LIVE subido a 2.5) |
+| Pipeline analytics | ✅ Disponible | parse_pipeline.py — breakdown por etapa, modo --compare |
 | Packaging (PyInstaller) | ⬜ Pendiente | F07/F08 no iniciados |
 | Monetización | ⬜ Pendiente | $15/mes + 7 días gratis, Dodo Payments |
 
@@ -67,20 +74,31 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 
 ## 5. Bugs abiertos por prioridad
 
+### P0 — Bloqueante UX
+| ID | Descripción | Estado |
+|----|-------------|--------|
+| BUG-24 | Realtime STT no funciona — `REALTIME_SESSION_MODEL=gpt-4o-mini-transcribe` inválido para el WebSocket realtime. Fix protocolo ya aplicado. Pendiente: cambiar a `gpt-4o-realtime-preview` en `.env` y validar | 🟡 Parcial |
+
 ### P1 — Importantes
 | ID | Descripción | Archivo |
 |----|-------------|---------|
 | BUG-06 | Sin timeout en `Queue.get()` — workers se cuelgan si audio listener falla | `main.py` |
-| BUG-07 | ✅ RESUELTO | `validate_api_key()` en `transcription_service.py` + llamada en `main.py:start()` |
-| BUG-08 | `except Exception` genérico oculta errores reales — debugging imposible | `main.py` |
+| BUG-08 | `except Exception` genérico oculta errores reales | `main.py` |
 | BUG-09 | `full_transcript_buffer` sin lock — crash posible durante export | `overlay_ui.py` |
-| BUG-12 | `_list_audio_sources()` silencia todos los errores | `overlay_ui.py` |
-| BUG-13 | ✅ RESUELTO | `show_error_dialog()` en `overlay_ui.py` + detección en `main.py:start()` |
+| BUG-25 | Premium ratio 13.5% ignora cap PREMIUM_MAX_RATIO=0.10 — revisar lógica | `main.py` |
+| BUG-26 | 4 stale drops por sesión — STALE_EMIT_RELAX_FACTOR 1.17 muy ajustado | `main.py` |
 
 ### P2 — Código frágil
 BUG-14 (memory leak deque), BUG-15 (None checks), BUG-16 (regex sin tests),
 BUG-17 (contexto transcripción no se resetea), BUG-19 (load_dotenv sin manejo),
 BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22 (deps sin fijar)
+
+### Resueltos en sesión 17
+- ✅ BUG-24 (protocolo): `session.update` → `transcription_session.update` + payload correcto
+- ✅ Chunk cap: `MAX_CHUNK_SECONDS_LIVE` 1.0→2.5 (ya no silencia CHUNK_SECONDS del .env)
+- ✅ Contexto repetido en traducción: prompt con `[REFERENCE ONLY]` + rules 6/10 reforzadas
+- ✅ Cocoa crash: xattr quarantine + codesign en main.py y run.sh
+- ✅ Stale threshold: `STALE_EMIT_RELAX_FACTOR` 1.5→1.17
 
 ---
 
@@ -105,9 +123,9 @@ BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22
 
 ## 7. Próximos pasos inmediatos
 
-1. **Correr sesión real con nuevo threshold** — validar que el drop rate baja y no aparece basura visible en la UI
-2. **Comparar VAD on vs off** — correr sesión con `VAD_ENABLED=1`, guardar JSONL, comparar con `python parse_pipeline.py --compare`
-3. **BUG-23** — confirmar resolución con prueba instrumentada (VAD elimina mezcla de idiomas)
+1. **BUG-24 final** — cambiar `REALTIME_SESSION_MODEL=gpt-4o-realtime-preview` en `.env`, probar Run 7 con realtime activado
+2. **BUG-25** — revisar lógica de cap premium en `main.py` (13.5% > 10%)
+3. **BUG-26** — subir `STALE_EMIT_RELAX_FACTOR` 1.17→1.35 para eliminar stale drops en chunks lentos
 4. **BUG-06 / BUG-08 / BUG-09** — bugs P1 aún sin tocar
 5. **F07** — packaging PyInstaller macOS
 

@@ -1,7 +1,7 @@
 # ProjectTracker - Loro
 
 ## Progreso global estimado
-**91%**
+**93%**
 
 ## Fases 0% -> 100%
 
@@ -40,12 +40,11 @@
   - `/Users/hola/Documents/New project/tests/` (audio buffer/UI/dedup/metrics/translation/visualización)
 
 ## Backlog inmediato (siguiente iteración)
-1. Validar drop rate con nuevo threshold (SOURCE_COMMIT_MIN_CONFIDENCE=0.28) en sesión real — verificar que no aparece basura en UI.
-2. Comparar VAD on vs off con `parse_pipeline.py --compare` — cuantificar impacto en latencia y drops.
-3. BUG-23 — confirmar resolución definitiva con prueba instrumentada.
+1. BUG-24 final — cambiar REALTIME_SESSION_MODEL=gpt-4o-realtime-preview, validar Run 7 con realtime activo.
+2. BUG-25 — revisar cap premium en main.py (13.5% > cap 10%).
+3. BUG-26 — subir STALE_EMIT_RELAX_FACTOR 1.17→1.35 para eliminar stale drops.
 4. BUG-06 / BUG-08 / BUG-09 — bugs P1 pendientes.
 5. F07/F08 — packaging PyInstaller macOS + Windows.
-6. Cerrar selector de dispositivo de audio en UI.
 
 ## Registro de cambios (resumen)
 - 2026-02-14: Se completó MVP funcional base y se inició fase F8 (validación E2E real).
@@ -57,3 +56,4 @@
 - 2026-03-01 (sesión 2): BUG-07 y BUG-13 resueltos. Fix crítico de entorno: migración a Python 3.11 (Homebrew) + PyQt6 6.8.1 + patch RPATH/codesign para cocoa plugin en macOS Sequoia. Streaming STT activado por default. Tuning de .env: TRANSLATION_MAX_TOKENS 200, MERGE_MIN_WORDS 5, MIN_EMIT_WORDS 4.
 - 2026-03-12: Silero VAD implementado (vad.py + audio_listener.py). Fix permanente de cocoa crash (staging plugins Qt a /tmp en main.py). Latencia primer subtítulo: 46s→6s. BUG-23 parcialmente resuelto (VAD elimina mezcla pero añade latencia). Próximo: instrumentar pipeline para diagnóstico cuantitativo. Commit `e4a5e0d`.
 - 2026-03-16: Pipeline analizado con datos reales (93 registros). Latencia avg=2.35s P95=3.17s. STT=53% del tiempo. Drop rate reducido: SOURCE_COMMIT_MIN_CONFIDENCE 0.39→0.28 (14/17 drops innecesarios rescatados). Gaps largos diagnosticados como silencios naturales (no bugs). Nuevo script `parse_pipeline.py` con modo --compare para VAD off vs on. venv movido a `~/loro-venv` (fix path con espacios). Alias `loro` configurado. Commit `0441ff9`.
+- 2026-03-16 (sesión 17): 6 runs de validación. Run 5 y Run 6: 0.0% issue rate, 0 drops. Fixes aplicados: chunk cap 1.0→2.5s, TRANSLATION_CONTEXT_TURNS 3→1, prompt de contexto con [REFERENCE ONLY], xattr+codesign en run.sh, STALE_EMIT_RELAX_FACTOR 1.5→1.17. BUG-24 parcial: protocolo transcription_session.update corregido, pero REALTIME_SESSION_MODEL sigue siendo incorrecto (gpt-4o-mini-transcribe → necesita gpt-4o-realtime-preview). Métricas Run 6: avg=2.04s p50=1.73s p95=3.26s, premium ratio 13.5% (excede cap). Commits `fa2d665`, `75fcabf`.
