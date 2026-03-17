@@ -266,28 +266,26 @@ class RealtimeTranscriptionService:
                 connection = None
                 try:
                     connection = await self._client.realtime.connect(model=session_model_name, extra_query={"intent": "transcription"}).enter()
-                    transcription_config = {"model": model_name}
+                    transcription_config: dict = {"model": model_name}
                     if self._language_hint:
                         transcription_config["language"] = self._language_hint
                     if self._base_prompt:
                         transcription_config["prompt"] = self._base_prompt
-                    await connection.session.update(
-                        session={
-                            "type": "transcription",
-                            "audio": {
-                                "input": {
-                                    "format": {"type": "audio/pcm", "rate": 24000},
-                                    "transcription": transcription_config,
-                                    "turn_detection": {
-                                        "type": "server_vad",
-                                        "prefix_padding_ms": self._vad_prefix_padding_ms,
-                                        "silence_duration_ms": self._vad_silence_duration_ms,
-                                        "threshold": self._vad_threshold,
-                                    },
-                                }
+                    # Transcription sessions require transcription_session.update,
+                    # not session.update — using session.update causes BUG-24.
+                    await connection.send({
+                        "type": "transcription_session.update",
+                        "session": {
+                            "input_audio_format": "pcm16",
+                            "input_audio_transcription": transcription_config,
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "threshold": self._vad_threshold,
+                                "prefix_padding_ms": self._vad_prefix_padding_ms,
+                                "silence_duration_ms": self._vad_silence_duration_ms,
                             },
-                        }
-                    )
+                        },
+                    })
                     self._connection = connection
                     self._active_session_model_index = session_model_index
                     self._active_model_index = model_index
