@@ -24,6 +24,10 @@ if sys.platform == "darwin":
             _qt6_base = Path(_spec.origin).parent / "Qt6"
             _plugins_src = _qt6_base / "plugins" / "platforms"
             if _plugins_src.is_dir():
+                subprocess.run(
+                    ["xattr", "-rd", "com.apple.quarantine", str(_qt6_base)],
+                    capture_output=True,
+                )
                 for _dylib in _plugins_src.glob("libq*.dylib"):
                     subprocess.run(
                         ["codesign", "--sign", "-", "--force", str(_dylib)],
@@ -165,11 +169,11 @@ class MeetingTranslatorController:
     DUPLICATE_SEQUENCE_RATIO = 0.995
     DUPLICATE_MAX_WORD_DELTA = 0
     MIN_WORDS_ON_AGE_FLUSH = 3
-    STALE_EMIT_RELAX_FACTOR = 1.5
+    STALE_EMIT_RELAX_FACTOR = 1.17
     FIRST_EMIT_MIN_CHARS = 12
     MIN_STALENESS_SECONDS_LIVE = 3.0
     MIN_CHUNK_STEP_SECONDS_LIVE = 0.85
-    MAX_CHUNK_SECONDS_LIVE = 1.0
+    MAX_CHUNK_SECONDS_LIVE = 2.5
     STARTUP_LISTENER_VALIDATION_SECONDS = 0.8
     PROVISIONAL_PREVIEW_MIN_WORDS = 2
     SOURCE_TRANSLATION_MIN_WORDS = 4

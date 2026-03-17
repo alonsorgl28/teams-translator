@@ -428,11 +428,11 @@ class TechnicalTranslationService:
             "3) Keep the same level of certainty and tone. Do not summarize, shorten, or paraphrase away details.\n"
             "4) This is transformation only. Never refuse, apologize, explain, or add safety disclaimers.\n"
             "5) Translate common words and pronouns (for example: you, we, they, model); preserve only true names/brands.\n"
-            "6) Use context only to disambiguate terms. Do not invent facts, words, or sentences not in source.\n"
+            "6) Use context ONLY to infer subject, tense, and speaker — never copy, repeat, or include context text in your output.\n"
             "7) Translate short fragments literally even if they start mid-sentence.\n"
             "8) Translate pronouns, fillers, and discourse markers unless they are part of a brand/title.\n"
             "9) Prefer direct translation over stylistic paraphrase. Never complete an unfinished thought.\n"
-            "10) Return only the translated text."
+            "10) Return ONLY the translation of the Text field. The context is reference — never output it."
         )
         prompt_lines = [
             f"Supported language set: {', '.join(self._SUPPORTED_LANGS)}",
@@ -446,9 +446,9 @@ class TechnicalTranslationService:
         if domain_rules:
             prompt_lines.append(f"Domain glossary EN->ES (must obey when term appears): {domain_rules}")
         if recent_source_context:
-            prompt_lines.append(f"Recent source context:\n{recent_source_context}")
+            prompt_lines.append(f"[REFERENCE ONLY — do not include in output] Recent source:\n{recent_source_context}")
         if recent_translation_context:
-            prompt_lines.append(f"Recent Spanish context:\n{recent_translation_context}")
+            prompt_lines.append(f"[REFERENCE ONLY — do not include in output] Recent translation:\n{recent_translation_context}")
         prompt_lines.append(f"Text:\n{source_text}")
         user_prompt = "\n\n".join(prompt_lines)
         return await self._chat(user_prompt, system_prompt, model_override=model_override, preview_callback=preview_callback)
