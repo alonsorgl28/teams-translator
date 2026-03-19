@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections import deque
 from typing import Optional
 
@@ -318,6 +319,7 @@ class OverlayWindow(QWidget):
 
         max_segments = read_int_env("FULL_TRANSCRIPT_MAX_SEGMENTS", self.DEFAULT_FULL_TRANSCRIPT_MAX_SEGMENTS)
         self.full_transcript_buffer: deque[str] = deque(maxlen=max_segments)
+        self._transcript_lock = threading.Lock()
         self._history_visible_segments = read_int_env(
             "HISTORY_VISIBLE_SEGMENTS",
             self.DEFAULT_HISTORY_VISIBLE_SEGMENTS,
@@ -362,7 +364,8 @@ class OverlayWindow(QWidget):
         if not cleaned:
             return
 
-        self.full_transcript_buffer.append(cleaned)
+        with self._transcript_lock:
+            self.full_transcript_buffer.append(cleaned)
         display_line = self._display_line(cleaned)
         self._append_to_history_drawer(display_line)
         self._append_to_list_view(display_line)
@@ -386,7 +389,8 @@ class OverlayWindow(QWidget):
         self.history_view.clear()
 
     def get_full_transcript_text(self) -> str:
-        return "\n".join(self.full_transcript_buffer)
+        with self._transcript_lock:
+            return "\n".join(self.full_transcript_buffer)
 
     def set_listening(self, listening: bool) -> None:
         was_listening = self._listening
@@ -1085,7 +1089,8 @@ class OverlayWindow(QWidget):
     def _append_to_history_drawer(self, line: str) -> None:
         if not line:
             return
-        rendered_history = [self._display_line(entry) for entry in self.full_transcript_buffer]
+        with self._transcript_lock:
+            rendered_history = [self._display_line(entry) for entry in self.full_transcript_buffer]
         tail = rendered_history[-self._history_visible_segments :]
         self.history_view.setPlainText("\n".join(tail))
         cursor = self.history_view.textCursor()
@@ -1115,7 +1120,8 @@ class OverlayWindow(QWidget):
         self._paint_live_subtitles()
 
     def _render_full_history(self) -> None:
-        visible_history = [self._display_line(line) for line in self.full_transcript_buffer]
+        with self._transcript_lock:
+            visible_history = [self._display_line(line) for line in self.full_transcript_buffer]
         tail = visible_history[-self._history_visible_segments :]
         self.transcript_view.setPlainText("\n".join(tail))
         self.history_view.setPlainText("\n".join(tail))

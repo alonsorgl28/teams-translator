@@ -40,8 +40,9 @@ if sys.platform == "darwin":
                 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(_plugins_src)
             if "QT_PLUGIN_PATH" not in os.environ:
                 os.environ["QT_PLUGIN_PATH"] = str(_qt6_base / "plugins")
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging as _logging
+        _logging.debug("Qt plugin path setup failed [%s]: %s", type(exc).__name__, exc)
 
 from dotenv import load_dotenv
 from PyQt6.QtCore import QTimer
@@ -173,7 +174,7 @@ class MeetingTranslatorController:
     DUPLICATE_SEQUENCE_RATIO = 0.995
     DUPLICATE_MAX_WORD_DELTA = 0
     MIN_WORDS_ON_AGE_FLUSH = 3
-    STALE_EMIT_RELAX_FACTOR = 1.17
+    STALE_EMIT_RELAX_FACTOR = 1.35  # default; overridable via STALE_EMIT_RELAX_FACTOR in .env
     FIRST_EMIT_MIN_CHARS = 12
     MIN_STALENESS_SECONDS_LIVE = 3.0
     MIN_CHUNK_STEP_SECONDS_LIVE = 0.85
@@ -337,6 +338,7 @@ class MeetingTranslatorController:
         )
         default_skip = 999999 if self.literal_complete_mode else 2
         self.max_audio_backlog_before_skip = read_int_env("MAX_AUDIO_BACKLOG_BEFORE_SKIP", default_skip)
+        self.queue_get_timeout = read_float_env("QUEUE_GET_TIMEOUT_SECONDS", 5.0)
         self.max_text_backlog_before_skip = read_int_env(
             "MAX_TEXT_BACKLOG_BEFORE_SKIP",
             read_int_env("MAX_BACKLOG_BEFORE_SKIP", default_skip),
@@ -406,7 +408,8 @@ class MeetingTranslatorController:
             self.max_segment_staleness_seconds = configured_staleness
         else:
             self.max_segment_staleness_seconds = max(configured_staleness, self.MIN_STALENESS_SECONDS_LIVE)
-        self.max_emit_staleness_seconds = self.max_segment_staleness_seconds * self.STALE_EMIT_RELAX_FACTOR
+        stale_relax = read_float_env("STALE_EMIT_RELAX_FACTOR", self.STALE_EMIT_RELAX_FACTOR)
+        self.max_emit_staleness_seconds = self.max_segment_staleness_seconds * stale_relax
         self.transcriber: Optional[WhisperTranscriptionService] = None
         self.realtime_transcriber: Optional[RealtimeTranscriptionService] = None
         self.translator: Optional[TechnicalTranslationService] = None
@@ -666,7 +669,10 @@ class MeetingTranslatorController:
                 if not self.running:
                     break
             try:
-                chunk = await self.audio_queue.get()
+                try:
+                    chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=self.queue_get_timeout)
+                except asyncio.TimeoutError:
+                    continue
                 audio_backlog = self.audio_queue.qsize()
                 if audio_backlog > self.max_audio_backlog_before_skip:
                     skipped = 0
@@ -729,6 +735,7 @@ class MeetingTranslatorController:
                 break
             except Exception as exc:  # noqa: BLE001 - runtime boundary
                 self.transcription_errors += 1
+                logging.error("transcription_worker_loop [%s]: %s", type(exc).__name__, exc)
                 self.metrics_reporter.record_error(
                     stage="transcription",
                     error=str(exc),
@@ -750,7 +757,10 @@ class MeetingTranslatorController:
                 if not self.running:
                     break
             try:
-                frame = await self.stream_audio_queue.get()
+                try:
+                    frame = await asyncio.wait_for(self.stream_audio_queue.get(), timeout=self.queue_get_timeout)
+                except asyncio.TimeoutError:
+                    continue
                 if not self._using_realtime_transcription or self.realtime_transcriber is None:
                     continue
                 await self.realtime_transcriber.append_audio(
@@ -762,6 +772,7 @@ class MeetingTranslatorController:
                 break
             except Exception as exc:  # noqa: BLE001 - realtime boundary
                 self.transcription_errors += 1
+                logging.error("realtime_audio_sender_loop [%s]: %s", type(exc).__name__, exc)
                 self.metrics_reporter.record_error(
                     stage="transcription",
                     error=str(exc),
@@ -836,6 +847,7 @@ class MeetingTranslatorController:
                 break
             except Exception as exc:  # noqa: BLE001 - realtime boundary
                 self.transcription_errors += 1
+                logging.error("realtime_transcription_worker_loop [%s]: %s", type(exc).__name__, exc)
                 self.metrics_reporter.record_error(
                     stage="transcription",
                     error=str(exc),
@@ -879,15 +891,18 @@ class MeetingTranslatorController:
                 if not self.running:
                     break
             try:
-                (
-                    chunk,
-                    source_text,
-                    source_text_raw,
-                    source_language,
-                    transcription_time,
-                    transcription_start_ts,
-                    transcription_end_ts,
-                ) = await self.text_queue.get()
+                try:
+                    (
+                        chunk,
+                        source_text,
+                        source_text_raw,
+                        source_language,
+                        transcription_time,
+                        transcription_start_ts,
+                        transcription_end_ts,
+                    ) = await asyncio.wait_for(self.text_queue.get(), timeout=self.queue_get_timeout)
+                except asyncio.TimeoutError:
+                    continue
                 backlog = self.text_queue.qsize()
                 audio_backlog_snapshot = self._current_audio_backlog()
                 if backlog > self.max_text_backlog_before_skip:
@@ -1080,6 +1095,7 @@ class MeetingTranslatorController:
                 break
             except Exception as exc:  # noqa: BLE001 - runtime boundary
                 self.translation_errors += 1
+                logging.error("translation_worker_loop [%s]: %s", type(exc).__name__, exc)
                 self.metrics_reporter.record_error(
                     stage="translation",
                     error=str(exc),
@@ -1341,6 +1357,7 @@ class MeetingTranslatorController:
             except asyncio.CancelledError:
                 pass
             except Exception as exc:  # noqa: BLE001 - task boundary
+                logging.error("toggle_task [%s]: %s", type(exc).__name__, exc)
                 self.ui.set_status(f"Toggle error: {exc}")
 
         task.add_done_callback(_finalize)
