@@ -212,11 +212,11 @@ class TechnicalTranslationService:
     def _select_route(self, confidence_score: float, force_premium: bool) -> TranslationRoute:
         if not self.premium_enabled:
             return "normal"
-        if not self._can_route_premium() and not force_premium:
+        if not self._can_route_premium():  # cap always wins, even over force_premium
             return "normal"
         if force_premium:
             return "premium"
-        if confidence_score < self._premium_trigger_score and self._can_route_premium():
+        if confidence_score < self._premium_trigger_score:
             return "premium"
         return "normal"
 
