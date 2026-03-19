@@ -190,6 +190,10 @@ class TechnicalTranslationService:
                 if item.get("term_es"):
                     self._protected_terms.append(item["term_es"])
         self._protected_terms = list(dict.fromkeys(term.strip() for term in self._protected_terms if term.strip()))
+        # Hardcoded defaults — terms commonly mistranslated regardless of env config
+        for _default in ("Claude Code",):
+            if _default not in self._protected_terms:
+                self._protected_terms.append(_default)
         self._premium_model = (os.getenv("PREMIUM_TRANSLATION_MODEL") or "gpt-4o").strip()
         self._premium_trigger_score = read_float_env("PREMIUM_TRIGGER_SCORE", 0.82)
         self._premium_max_ratio = max(0.05, min(1.0, read_float_env("PREMIUM_MAX_RATIO", 0.25)))
