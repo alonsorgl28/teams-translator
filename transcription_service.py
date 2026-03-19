@@ -243,6 +243,9 @@ class RealtimeTranscriptionService:
         self._event_queue: asyncio.Queue[RealtimeTranscriptionEvent] = asyncio.Queue(
             maxsize=read_int_env("REALTIME_EVENT_QUEUE_MAXSIZE", 128)
         )
+        # Timeout for the WebSocket connect() call. Prevents the 13s wait when the
+        # endpoint rejects the session. Falls back to batch after this many seconds.
+        self._connect_timeout = read_float_env("REALTIME_CONNECT_TIMEOUT_SECONDS", 5.0)
         self._connection = None
         self._receiver_task: Optional[asyncio.Task[None]] = None
         self._running = False
@@ -259,49 +262,48 @@ class RealtimeTranscriptionService:
         if self._running:
             return
         last_error: Optional[Exception] = None
-        for session_model_index in range(self._active_session_model_index, len(self._session_models)):
-            session_model_name = self._session_models[session_model_index]
-            for model_index in range(self._active_model_index, len(self._models)):
-                model_name = self._models[model_index]
-                connection = None
-                try:
-                    connection = await self._client.realtime.connect(model=session_model_name, extra_query={"intent": "transcription"}).enter()
-                    transcription_config: dict = {"model": model_name}
-                    if self._language_hint:
-                        transcription_config["language"] = self._language_hint
-                    if self._base_prompt:
-                        transcription_config["prompt"] = self._base_prompt
-                    # Transcription sessions require transcription_session.update,
-                    # not session.update — using session.update causes BUG-24.
-                    await connection.send({
-                        "type": "transcription_session.update",
-                        "session": {
-                            "input_audio_format": "pcm16",
-                            "input_audio_transcription": transcription_config,
-                            "turn_detection": {
-                                "type": "server_vad",
-                                "threshold": self._vad_threshold,
-                                "prefix_padding_ms": self._vad_prefix_padding_ms,
-                                "silence_duration_ms": self._vad_silence_duration_ms,
-                            },
+        for model_index in range(self._active_model_index, len(self._models)):
+            model_name = self._models[model_index]
+            connection = None
+            try:
+                # BUG-24 fix: for intent=transcription, model must NOT be passed to connect().
+                # The model goes only in transcription_session.update below.
+                connection = await asyncio.wait_for(
+                    self._client.realtime.connect(extra_query={"intent": "transcription"}).enter(),
+                    timeout=self._connect_timeout,
+                )
+                transcription_config: dict = {"model": model_name}
+                if self._language_hint:
+                    transcription_config["language"] = self._language_hint
+                if self._base_prompt:
+                    transcription_config["prompt"] = self._base_prompt
+                await connection.send({
+                    "type": "transcription_session.update",
+                    "session": {
+                        "input_audio_format": "pcm16",
+                        "input_audio_transcription": transcription_config,
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": self._vad_threshold,
+                            "prefix_padding_ms": self._vad_prefix_padding_ms,
+                            "silence_duration_ms": self._vad_silence_duration_ms,
                         },
-                    })
-                    self._connection = connection
-                    self._active_session_model_index = session_model_index
-                    self._active_model_index = model_index
-                    self._session_model = session_model_name
-                    self._model = model_name
-                    self._running = True
-                    self._receiver_task = asyncio.create_task(
-                        self._receive_events(),
-                        name="realtime-transcription-recv",
-                    )
-                    return
-                except Exception as exc:  # noqa: BLE001 - realtime startup boundary
-                    last_error = exc
-                    if connection is not None:
-                        with suppress(Exception):
-                            await connection.close()
+                    },
+                })
+                self._connection = connection
+                self._active_model_index = model_index
+                self._model = model_name
+                self._running = True
+                self._receiver_task = asyncio.create_task(
+                    self._receive_events(),
+                    name="realtime-transcription-recv",
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 - realtime startup boundary
+                last_error = exc
+                if connection is not None:
+                    with suppress(Exception):
+                        await connection.close()
 
         raise RuntimeError(f"Realtime transcription failed with all configured models: {last_error}") from last_error
 
