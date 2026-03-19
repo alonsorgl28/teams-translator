@@ -35,6 +35,7 @@ GitHub: `alonsorgl28/teams-translator` (público)
 | Cambio de idioma no cancela pipeline activo | El contexto se limpia (BUG-03 ✅) pero la cola de audio no se vacía. Puede haber chunks del idioma anterior. |
 | `.env` sin trailing newline causa que última variable no se cargue | Siempre dejar línea vacía al final del `.env`. |
 | `FULL_TRANSCRIPT_MAX_SEGMENTS` controla memoria de la UI | Default 500. Sesiones largas acumulan RAM en overlay si no se limita. |
+| PyQt6 6.8.x rompe cocoa en Sequoia | **NUNCA subir PyQt6 más allá de 6.7.x.** La versión 6.8.1 tiene un bug donde el plugin cocoa no carga en macOS Sequoia aunque esté firmado. Versión fija: `PyQt6==6.7.1` + `PyQt6-Qt6==6.7.3`. Si se rompe: `run.sh` tiene auto-repair. |
 
 ---
 

@@ -28,6 +28,10 @@ if sys.platform == "darwin":
                     ["xattr", "-rd", "com.apple.quarantine", str(_qt6_base)],
                     capture_output=True,
                 )
+                subprocess.run(
+                    ["xattr", "-rd", "com.apple.provenance", str(_qt6_base)],
+                    capture_output=True,
+                )
                 for _dylib in _plugins_src.glob("libq*.dylib"):
                     subprocess.run(
                         ["codesign", "--sign", "-", "--force", str(_dylib)],
@@ -538,11 +542,17 @@ class MeetingTranslatorController:
             if self.realtime_transcriber is not None:
                 self.realtime_transcriber.reset_context()
                 try:
+                    logging.info("Realtime transcription starting with model=%s", os.getenv("REALTIME_SESSION_MODEL", "unknown"))
                     await self.realtime_transcriber.start()
                     self._using_realtime_transcription = True
+                    logging.info("Realtime transcription ACTIVE — using WebSocket streaming")
                 except Exception as exc:  # noqa: BLE001 - graceful batch fallback
-                    logging.warning("Realtime transcription unavailable, falling back to batch: %s", exc)
+                    logging.error("Realtime transcription FAILED, falling back to batch: %s", exc)
                     self._using_realtime_transcription = False
+            else:
+                if self.realtime_transcription_enabled:
+                    logging.error("REALTIME_TRANSCRIPTION_ENABLED=1 but realtime_transcriber is None — check _ensure_services()")
+                logging.info("Using batch transcription mode")
             self.metrics_reporter.start_session()
             self.replay_logger.start_session(self.replay_fixture_id, started_at=self._session_anchor_at)
             self.listener.start()

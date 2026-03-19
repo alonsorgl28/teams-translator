@@ -39,10 +39,10 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 | `VAD_ENABLED` | 0 | Activar segmentación por voz (Silero VAD) |
 | `CHUNK_SECONDS` | 1.8 | Tamaño de chunk de audio en segundos |
 | `CHUNK_STEP_SECONDS` | 1.8 | Paso entre chunks (sin overlap actualmente) |
-| `MAX_SEGMENT_STALENESS_SECONDS` | 1.0 | Descarta segmentos viejos antes de procesar |
-| `REALTIME_TRANSCRIPTION_ENABLED` | 1 | Activa modo streaming palabra por palabra (BUG-24: falla por REALTIME_SESSION_MODEL incorrecto) |
-| `REALTIME_SESSION_MODEL` | gpt-4o-mini-transcribe | ⚠️ INCORRECTO — debe ser `gpt-4o-realtime-preview` |
-| `TRANSLATION_CONTEXT_TURNS` | 1 | Turnos de contexto pasados al modelo de traducción |
+| `MAX_SEGMENT_STALENESS_SECONDS` | 1.5 | Descarta segmentos viejos antes de procesar (subido de 1.0 en sesión #18) |
+| `REALTIME_TRANSCRIPTION_ENABLED` | 1 | Activa modo streaming palabra por palabra |
+| `REALTIME_SESSION_MODEL` | gpt-4o-mini-transcribe | ✅ CORRECTO — este ES el modelo para Realtime API transcription. `gpt-4o-realtime-preview` NO existe. |
+| `TRANSLATION_CONTEXT_TURNS` | 2 | Turnos de contexto pasados al modelo de traducción (subido de 1 a 2 en sesión #18) |
 | `PREMIUM_TRIGGER_SCORE` | 1.5 | Score mínimo para usar modelo premium |
 | `PREMIUM_MAX_RATIO` | 0.10 | Cap de segmentos premium por sesión (10%) |
 | `FILTER_GIBBERISH` | 1 | Filtra transcripciones sin sentido |
@@ -50,25 +50,26 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 
 ---
 
-## 4. Estado actual — Mar 2026 (sesión 17)
+## 4. Estado actual — Mar 2026 (sesión 18)
 
 **Progreso:** 93% (F9 en curso, F10 pendiente)
 
 | Área | Estado | Notas |
 |------|--------|-------|
 | Audio capture | ✅ Estable | BlackHole requerido en macOS. VAD disponible (VAD_ENABLED=1) |
-| STT batch | ✅ Estable | 0.0% issue rate, 0 drops en Run 5 y Run 6. avg latencia STT ~0.8s |
-| STT realtime | 🔴 BUG-24 | Fix de protocolo aplicado (transcription_session.update ✅). Pendiente: REALTIME_SESSION_MODEL debe ser gpt-4o-realtime-preview |
-| Traducción | ✅ Estable | gpt-4o-mini. TRANSLATION_CONTEXT_TURNS=1 (3→1 reduce repetición de contexto) |
+| STT batch | ✅ Estable | Runs 7+8 ejecutados. avg=2.54s, p95=3.09s |
+| STT realtime | 🟡 Run 9 pendiente | Modelo correcto = `gpt-4o-mini-transcribe`. Protocolo correcto = `transcription_session.update`. Run 9 verificará si conecta. |
+| Traducción | 🟡 Repeticiones | gpt-4o-mini. TURNS=2. Prompt mejorado (fluidez > literalidad). Repeticiones masivas de contexto siguen activas. |
 | Overlay UI | ✅ Estable | Modo cinema/list. Siempre on-top, draggable |
-| macOS cocoa plugin | ✅ Resuelto | xattr quarantine + codesign en main.py y run.sh |
-| Latencia end-to-end | ✅ Medida (Run 6) | avg=2.04s, p50=1.73s, p95=3.26s, max=3.40s |
-| Stale drops (emit) | 🟡 4 por sesión | age_s>3.51s en chunks lentos. Fix: subir STALE_EMIT_RELAX_FACTOR 1.17→1.35 |
-| Premium ratio | 🟡 13.5% (cap 10%) | Cap no está funcionando correctamente. Pendiente revisar lógica |
-| Chunk size | ✅ Fijo | CHUNK_SECONDS=1.8 (cap MAX_CHUNK_SECONDS_LIVE subido a 2.5) |
+| macOS cocoa plugin | ✅ Resuelto definitivo | PyQt6 pineado a 6.7.1 (6.8.x rompe cocoa en Sequoia). run.sh tiene auto-repair. |
+| Latencia end-to-end | ✅ Medida (Run 8) | avg=2.54s, p50=2.60s, p95=3.09s, max=3.34s |
+| Stale drops (emit) | 🟡 8 por sesión | age_s>3.51s. MAX_SEGMENT_STALENESS subido a 1.5 |
+| Premium ratio | 🟡 12.2% (cap 10%) | Cap no funciona. Pendiente revisar lógica |
+| Segmentación | 🟡 Tuning en progreso | COMMIT_MIN_WORDS=7, MERGE_MAX_WORDS=32, MIN_EMIT_WORDS=6 |
 | Pipeline analytics | ✅ Disponible | parse_pipeline.py — breakdown por etapa, modo --compare |
 | Packaging (PyInstaller) | ⬜ Pendiente | F07/F08 no iniciados |
 | Monetización | ⬜ Pendiente | $15/mes + 7 días gratis, Dodo Payments |
+| Análisis competitivo | ✅ Hecho | `Loro/Competitive-Analysis.md` — Seagull, Wordly, JotMe, DeepL |
 
 ---
 
@@ -77,7 +78,7 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 ### P0 — Bloqueante UX
 | ID | Descripción | Estado |
 |----|-------------|--------|
-| BUG-24 | Realtime STT no funciona — `REALTIME_SESSION_MODEL=gpt-4o-mini-transcribe` inválido para el WebSocket realtime. Fix protocolo ya aplicado. Pendiente: cambiar a `gpt-4o-realtime-preview` en `.env` y validar | 🟡 Parcial |
+| BUG-24 | Realtime STT — modelo `gpt-4o-mini-transcribe` ES correcto (no `gpt-4o-realtime-preview` que NO existe). Protocolo `transcription_session.update` aplicado. Run 9 pendiente para verificar conexión WebSocket. | 🟡 Run 9 pendiente |
 
 ### P1 — Importantes
 | ID | Descripción | Archivo |

@@ -429,10 +429,10 @@ class TechnicalTranslationService:
             "4) This is transformation only. Never refuse, apologize, explain, or add safety disclaimers.\n"
             "5) Translate common words and pronouns (for example: you, we, they, model); preserve only true names/brands.\n"
             "6) Use context ONLY to infer subject, tense, and speaker — never copy, repeat, or include context text in your output.\n"
-            "7) Translate short fragments literally even if they start mid-sentence.\n"
+            "7) If the fragment starts mid-sentence, use context to infer the correct conjugation and subject.\n"
             "8) Translate pronouns, fillers, and discourse markers unless they are part of a brand/title.\n"
-            "9) Prefer direct translation over stylistic paraphrase. Never complete an unfinished thought.\n"
-            "10) Return ONLY the translation of the Text field. The context is reference — never output it."
+            "9) Prefer natural fluent translation over word-by-word literalism. Never complete an unfinished thought.\n"
+            "10) Return ONLY the translation of the Text field. NEVER include any text from the context sections in your output — the context is invisible reference only."
         )
         prompt_lines = [
             f"Supported language set: {', '.join(self._SUPPORTED_LANGS)}",
