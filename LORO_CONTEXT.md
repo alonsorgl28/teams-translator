@@ -88,10 +88,17 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 - ✅ BUG-25: `_select_route` — cap siempre gana sobre `force_premium`
 - ✅ BUG-26: `STALE_EMIT_RELAX_FACTOR=1.55` en .env (threshold emit ~4.65s)
 
-### P2 — Código frágil
-BUG-14 (memory leak deque), BUG-15 (None checks), BUG-16 (regex sin tests),
-BUG-17 (contexto transcripción no se resetea), BUG-19 (load_dotenv sin manejo),
-BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22 (deps sin fijar)
+### P2 — Código frágil (pendientes)
+BUG-16 (regex sin tests), BUG-20 (estado corrupto en buffer)
+
+### Resueltos sesión 20 (este Claude — bugs P2)
+- ✅ BUG-14: `RollingTranscriptBuffer._entries` — `maxlen=3600` (cap seguridad + time-pruning)
+- ✅ BUG-15: assert al inicio de worker loops, removidos `# type: ignore[union-attr]`
+- ✅ BUG-17: `reset_context()` resetea `_active_model_index=0` + `buffer.clear()` en cambio de idioma
+- ✅ BUG-19: `load_dotenv()` envuelto en `try/except` (bundle + local)
+- ✅ BUG-21: `TARGET_LANGUAGE` validado contra set de idiomas conocidos, fallback a "Spanish"
+- ✅ BUG-22: `requirements.txt` — upper bounds en todas las deps (`<2.0.0`, `<3.0.0`, etc.)
+- ✅ F06: confirmado — código ya estaba limpio, sin referencias a "Teams Translator" en `.py`
 
 ### Resueltos sesiones 17-19
 - ✅ BUG-24 (protocolo): `session.update` → `transcription_session.update` (s17)
@@ -110,7 +117,7 @@ BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22
 - F01 `schema.py` — tipos Session, Segment, SessionStats
 - F02 Audio device selector en UI con medidor de nivel
 - F04/F05 Export TXT + SRT con timestamps
-- F06 Rebrand strings (ninguna referencia a "Teams Translator")
+- ~~F06 Rebrand strings~~ ✅ Código limpio (solo queda nombre repo GitHub)
 
 **Semana 2:**
 - F07/F08 Build PyInstaller macOS + Windows
@@ -125,10 +132,11 @@ BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22
 
 ## 7. Próximos pasos inmediatos
 
-1. **Run 12** — validar Fix B (capitalización merge + timing 1.0s/1.8s): ¿menos frases cortadas? ¿latencia aceptable?
-2. **Calidad de traducción** — evaluar si TRANSLATION_CONTEXT_TURNS=1 es viable con prompt mejorado (sin ghost)
-3. **F06** — rebrand: eliminar referencias a "Teams Translator" en strings de UI
-4. **F07/F08** — packaging PyInstaller macOS + Windows (primer paso hacia distribución)
+1. **Run 12** — validar Fix B (capitalización merge + timing): ¿menos frases cortadas?
+2. **Calidad de traducción** — evaluar TRANSLATION_CONTEXT_TURNS=1 con prompt mejorado (sin ghost)
+3. **BUG-16** — regex sin tests: agregar cobertura en `translation_service.py`
+4. **BUG-20** — estado corrupto en buffer: investigar y fijar
+5. **F07/F08** — packaging PyInstaller macOS + Windows
 
 ---
 
