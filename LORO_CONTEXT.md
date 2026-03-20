@@ -1,6 +1,6 @@
 # LORO — Compact Context
 > Cargar al inicio de cada sesión junto con CLAUDE.md.
-> Última actualización: 2026-03-18 (sesión 19)
+> Última actualización: 2026-03-19 (sesión 20 — dos Claudes en paralelo)
 
 ---
 
@@ -40,9 +40,9 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 | `CHUNK_SECONDS` | 1.8 | Tamaño de chunk de audio en segundos |
 | `CHUNK_STEP_SECONDS` | 1.8 | Paso entre chunks (sin overlap actualmente) |
 | `MAX_SEGMENT_STALENESS_SECONDS` | 1.5 | Descarta segmentos viejos antes de procesar (subido de 1.0 en sesión #18) |
-| `REALTIME_TRANSCRIPTION_ENABLED` | 1 | Activa modo streaming palabra por palabra |
-| `REALTIME_SESSION_MODEL` | gpt-4o-mini-transcribe | ✅ CORRECTO — este ES el modelo para Realtime API transcription. `gpt-4o-realtime-preview` NO existe. |
-| `TRANSLATION_CONTEXT_TURNS` | 2 | Turnos de contexto pasados al modelo de traducción (subido de 1 a 2 en sesión #18) |
+| `REALTIME_TRANSCRIPTION_ENABLED` | **0** | Desactivado — SDK instalado tiene bug con `connect()`. No reactivar hasta resolver versión. |
+| `REALTIME_SESSION_MODEL` | gpt-4o-mini-transcribe | Modelo para Realtime API (cuando se reactive). |
+| `TRANSLATION_CONTEXT_TURNS` | **0** | ⚠️ MANTENER EN 0. Con valor 1-2, gpt-4o-mini incluye historial completo en output (ghost translations). Solo subir si se reescribe el prompt de forma que lo prevenga. |
 | `PREMIUM_TRIGGER_SCORE` | 1.5 | Score mínimo para usar modelo premium |
 | `PREMIUM_MAX_RATIO` | 0.10 | Cap de segmentos premium por sesión (10%) |
 | `FILTER_GIBBERISH` | 1 | Filtra transcripciones sin sentido |
@@ -50,7 +50,7 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 
 ---
 
-## 4. Estado actual — Mar 2026 (sesión 19)
+## 4. Estado actual — Mar 2026 (sesión 20) — RUN 11 = MEJOR VERSIÓN
 
 **Progreso:** 93% (F9 en curso, F10 pendiente)
 
@@ -58,11 +58,11 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 |------|--------|-------|
 | Audio capture | ✅ Estable | BlackHole requerido en macOS. VAD disponible (VAD_ENABLED=1) |
 | STT batch | ✅ Estable | Runs 7+8 ejecutados. avg=2.54s, p95=3.09s |
-| STT realtime | 🟡 Run 9 pendiente | BUG-24 resuelto en código. Run 9 pendiente para verificar conexión WebSocket real. |
-| Traducción | 🟡 Repeticiones | gpt-4o-mini. TURNS=2. Prompt mejorado. "Claude Code" protegido de traducción. |
+| STT realtime | ⬜ Desactivado | BUG-24 — SDK bug con `connect()`. Desactivado en Run 11. Batch suficiente. |
+| Traducción | 🟡 Mejora pendiente | gpt-4o-mini. TURNS=0 (ghost fix). Run 11 issue_rate=0%. Quedan frases cortadas. |
 | Overlay UI | ✅ Estable | Modo cinema/list. Siempre on-top, draggable. `full_transcript_buffer` con Lock. |
 | macOS cocoa plugin | ✅ Resuelto definitivo | PyQt6 pineado a 6.7.1 (6.8.x rompe cocoa en Sequoia). run.sh tiene auto-repair. |
-| Latencia end-to-end | ✅ Medida (Run 8) | avg=2.54s, p50=2.60s, p95=3.09s, max=3.34s |
+| Latencia end-to-end | ✅ Medida (Run 11) | avg=2.81s, p50=3.16s, p95=3.94s, max=4.59s |
 | Stale drops (emit) | 🟢 Mitigado | STALE_EMIT_RELAX_FACTOR=1.55 en .env (threshold ~4.65s) |
 | Premium ratio | ✅ Cap corregido | Lógica `_select_route` revisada — cap siempre gana sobre force_premium |
 | Worker stability | ✅ Mejorado | Queue.get() con timeout 5s. Exceptions loguean tipo+mensaje real. |
@@ -79,7 +79,7 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 ### P0 — Bloqueante UX
 | ID | Descripción | Estado |
 |----|-------------|--------|
-| BUG-24 | Realtime STT — fix aplicado: modelo removido de `connect()`, va solo en `transcription_session.update`. Timeout 5s agregado. Run 10 pendiente para validar. | 🟡 Run 10 pendiente |
+| BUG-24 | Realtime STT — SDK bug con `connect()`. **Desactivado en .env** (`REALTIME_TRANSCRIPTION_ENABLED=0`). No retomar hasta tener versión compatible del SDK. | ✅ Mitigado (desactivado) |
 
 ### P1 — Resueltos en sesión 19
 - ✅ BUG-06: `Queue.get()` con `asyncio.wait_for(timeout=5s)` en todos los workers
@@ -125,10 +125,10 @@ BUG-20 (estado corrupto en buffer), BUG-21 (target_language sin validar), BUG-22
 
 ## 7. Próximos pasos inmediatos
 
-1. **BUG-24 Run 10** — ejecutar run real con realtime activado para validar WebSocket conecta correctamente
-2. **BUG-P2** — revisar BUG-14..22 si queda capacidad (deque leak, None checks, regex sin tests)
-3. **F07/F08** — packaging PyInstaller macOS + Windows (primer paso hacia distribución)
-4. **F06** — rebrand: eliminar referencias a "Teams Translator" en strings de UI
+1. **Run 12** — validar Fix B (capitalización merge + timing 1.0s/1.8s): ¿menos frases cortadas? ¿latencia aceptable?
+2. **Calidad de traducción** — evaluar si TRANSLATION_CONTEXT_TURNS=1 es viable con prompt mejorado (sin ghost)
+3. **F06** — rebrand: eliminar referencias a "Teams Translator" en strings de UI
+4. **F07/F08** — packaging PyInstaller macOS + Windows (primer paso hacia distribución)
 
 ---
 

@@ -61,9 +61,9 @@ from translation_service import TechnicalTranslationService
 
 
 class RollingTranscriptBuffer:
-    def __init__(self, window_minutes: int = 60) -> None:
+    def __init__(self, window_minutes: int = 60, max_entries: int = 3600) -> None:
         self._window = timedelta(minutes=window_minutes)
-        self._entries: deque[tuple[datetime, str]] = deque()
+        self._entries: deque[tuple[datetime, str]] = deque(maxlen=max_entries)
 
     def add(self, timestamp: datetime, text: str) -> None:
         self._entries.append((timestamp, text))
@@ -300,7 +300,19 @@ class MeetingTranslatorController:
         self.ui = ui
         self.loop = loop
         self.source_language = (os.getenv("SOURCE_LANGUAGE") or "Auto-detect").strip() or "Auto-detect"
-        self.target_language = (os.getenv("TARGET_LANGUAGE") or "Spanish").strip() or "Spanish"
+        _raw_target = (os.getenv("TARGET_LANGUAGE") or "Spanish").strip() or "Spanish"
+        _valid_targets = {
+            "Spanish", "English", "Portuguese (Brazil)",
+            "Mandarin Chinese (Simplified)", "Hindi",
+            "es", "en", "pt", "pt-br", "zh", "zh-cn", "hi",
+        }
+        if _raw_target not in _valid_targets:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "TARGET_LANGUAGE=%r is not a recognised value — defaulting to Spanish", _raw_target
+            )
+            _raw_target = "Spanish"
+        self.target_language = _raw_target
         self.literal_complete_mode = read_bool_env("LITERAL_COMPLETE_MODE", False)
         # Keep overlay language consistent by default: show only target-language output.
         self.show_source_preview = read_bool_env("SHOW_SOURCE_PREVIEW", False)
@@ -461,6 +473,7 @@ class MeetingTranslatorController:
         self._reference_cues: list[SubtitleCue] = self._load_reference_cues()
         self._last_rendered_normalized = ""
         self._recent_rendered_normalized: deque[str] = deque(maxlen=self.RECENT_RENDERED_MAXLEN)
+        self._recent_emitted_sentences: deque[str] = deque(maxlen=30)
         self._last_source_text = ""
         self._last_emitted_text = ""
         self._pending_render_text = ""
@@ -520,6 +533,7 @@ class MeetingTranslatorController:
             self._clear_runtime_queues()
             self._last_rendered_normalized = ""
             self._recent_rendered_normalized.clear()
+            self._recent_emitted_sentences.clear()
             self._last_source_text = ""
             self._last_emitted_text = ""
             self._pending_render_text = ""
@@ -664,6 +678,7 @@ class MeetingTranslatorController:
         self._using_realtime_transcription = False
 
     async def _transcription_worker_loop(self) -> None:
+        assert self.transcriber is not None, "_transcription_worker_loop started before _ensure_services()"
         while True:
             async with self._running_lock:
                 if not self.running:
@@ -690,7 +705,7 @@ class MeetingTranslatorController:
 
                 transcription_start_ts = datetime.now()
                 started = perf_counter()
-                transcribed = await self.transcriber.transcribe(  # type: ignore[union-attr]
+                transcribed = await self.transcriber.transcribe(
                     chunk.wav_bytes,
                     preview_callback=self._handle_transcription_preview,
                 )
@@ -886,6 +901,7 @@ class MeetingTranslatorController:
             )
 
     async def _translation_worker_loop(self) -> None:
+        assert self.translator is not None, "_translation_worker_loop started before _ensure_services()"
         while True:
             async with self._running_lock:
                 if not self.running:
@@ -980,13 +996,13 @@ class MeetingTranslatorController:
                 started = perf_counter()
                 translation_start_ts = datetime.now()
                 confidence_score = self.segment_quality.confidence_from_source(source_text)
-                translated, route = await self.translator.translate_text_with_route(  # type: ignore[union-attr]
+                translated, route = await self.translator.translate_text_with_route(
                     source_text,
                     target_language=self.target_language,
                     confidence_score=confidence_score,
                     preview_callback=self._handle_translation_preview,
                 )
-                fallback_reason = self.translator.last_error or ""  # type: ignore[union-attr]
+                fallback_reason = self.translator.last_error or ""
                 pending_age_s = (datetime.now() - source_metrics["captured_at"]).total_seconds()
                 decision = self.segment_quality.decide_commit(
                     source_text=source_text,
@@ -1000,8 +1016,7 @@ class MeetingTranslatorController:
                     and decision.dropped_reason in {"semantic_low", "language_guard"}
                     and route == "normal"
                 ):
-                    retry_translated, retry_route = await self.translator.translate_text_with_route(  # type: ignore[union-attr]
-                        source_text,
+                    retry_translated, retry_route = await self.translator.translate_text_with_route(                        source_text,
                         target_language=self.target_language,
                         confidence_score=0.0,
                         force_premium=True,
@@ -1017,7 +1032,7 @@ class MeetingTranslatorController:
                             route=route,
                             pending_age_s=pending_age_s,
                         )
-                    retry_fallback_reason = self.translator.last_error or ""  # type: ignore[union-attr]
+                    retry_fallback_reason = self.translator.last_error or ""
                     if retry_fallback_reason:
                         if fallback_reason:
                             fallback_reason = f"{fallback_reason};{retry_fallback_reason}"
@@ -1377,6 +1392,7 @@ class MeetingTranslatorController:
 
     def _on_clear_requested(self) -> None:
         self._last_rendered_normalized = ""
+        self._recent_emitted_sentences.clear()
         self._last_emitted_text = ""
         self._reset_pending_source_buffer()
         self._pending_render_revision = 0
@@ -1411,6 +1427,7 @@ class MeetingTranslatorController:
             reset_context = getattr(self.translator, "reset_context", None)
             if callable(reset_context):
                 reset_context()
+        self.buffer.clear()
         self.ui.set_status(f"Settings applied: {source_language} -> {target_language}.")
 
     def _on_audio_source_changed(self, audio_source: str) -> None:
@@ -1631,6 +1648,30 @@ class MeetingTranslatorController:
             previous_norm = norm
 
         return " ".join(rebuilt).strip()
+
+    @staticmethod
+    def _split_into_sentences(text: str) -> list[str]:
+        """Split text into sentences on .!? boundaries."""
+        parts = re.split(r"(?<=[.!?])\s+", text.strip())
+        return [p.strip() for p in parts if p.strip()]
+
+    @staticmethod
+    def _normalize_sentence(s: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", s).lower()).strip()
+
+    def _filter_already_emitted_sentences(self, text: str) -> str:
+        """Remove sentences already seen in _recent_emitted_sentences. Returns remaining text."""
+        sentences = self._split_into_sentences(text)
+        new_sentences = [s for s in sentences if self._normalize_sentence(s) not in self._recent_emitted_sentences]
+        if not new_sentences:
+            return ""
+        return " ".join(new_sentences)
+
+    def _record_emitted_sentences(self, text: str) -> None:
+        for s in self._split_into_sentences(text):
+            norm = self._normalize_sentence(s)
+            if norm:
+                self._recent_emitted_sentences.append(norm)
 
     @staticmethod
     def _clean_transcription_noise(text: str) -> str:
@@ -1872,6 +1913,9 @@ class MeetingTranslatorController:
         cleaned = self._remove_adjacent_sentence_duplicates(cleaned)
         if not cleaned:
             return
+        cleaned = self._filter_already_emitted_sentences(cleaned)
+        if not cleaned:
+            return
         self._source_preview_active = False
         self._last_preview_text = ""
         self.ui.clear_live_preview()
@@ -1886,6 +1930,7 @@ class MeetingTranslatorController:
             return
         if self.log_rendered_segments:
             logging.info("segment_out source_lang=%s text=%s", source_language, cleaned)
+        self._record_emitted_sentences(cleaned)
         self.buffer.add(timestamp, rendered)
         if self.ui.save_session_enabled:
             self.saved_session_text.append(rendered)
@@ -2155,6 +2200,10 @@ class MeetingTranslatorController:
 
         if current.endswith(("-", "/", "(", "[")):
             return f"{current}{incoming}"
+        # Si el izquierdo no termina en puntuación y el derecho empieza con mayúscula,
+        # insertar punto para evitar merges como "Me gustaría Eso es una mentira"
+        if incoming and incoming[0].isupper() and not re.search(r"[.!?…]\s*$", current):
+            return f"{current}. {incoming}".strip()
         return f"{current} {incoming}".strip()
 
     @staticmethod
@@ -2458,8 +2507,14 @@ def main() -> None:
     # that contains the .app (i.e. next to Loro.app, not inside it).
     if getattr(sys, "frozen", False):
         app_bundle_dir = Path(sys.executable).parent.parent.parent.parent
-        load_dotenv(app_bundle_dir / ".env")
-    load_dotenv()
+        try:
+            load_dotenv(app_bundle_dir / ".env")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] Could not load bundle .env: {exc}", file=sys.stderr)
+    try:
+        load_dotenv()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] Could not load .env: {exc}", file=sys.stderr)
     log_level_name = (os.getenv("LOG_LEVEL", "INFO") or "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
     live_log_path = Path(os.getenv("LIVE_RUN_LOG_PATH", "./reports/live_run.log"))

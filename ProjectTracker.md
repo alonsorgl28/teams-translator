@@ -40,9 +40,9 @@
   - `/Users/hola/Documents/New project/tests/` (audio buffer/UI/dedup/metrics/translation/visualización)
 
 ## Backlog inmediato (siguiente iteración)
-1. Run 10 — validar BUG-24: primer subtítulo <10s, logs deben mostrar "Realtime transcription ACTIVE".
-2. F06 — rebrand strings: eliminar referencias a "Teams Translator" en UI/código.
-3. BUG-19/21 — config_utils.py: load_dotenv con manejo de error + validación target_language.
+1. Run 12 — validar Fix B: capitalización merge + timing 1.0s/1.8s. ¿Menos frases cortadas?
+2. Calidad traducción — evaluar TRANSLATION_CONTEXT_TURNS=1 con prompt mejorado que prevenga ghost.
+3. F06 — rebrand strings: eliminar referencias a "Teams Translator" en UI/código.
 4. F07/F08 — packaging PyInstaller macOS + Windows.
 
 ## Registro de cambios (resumen)
@@ -57,3 +57,4 @@
 - 2026-03-16: Pipeline analizado con datos reales (93 registros). Latencia avg=2.35s P95=3.17s. STT=53% del tiempo. Drop rate reducido: SOURCE_COMMIT_MIN_CONFIDENCE 0.39→0.28 (14/17 drops innecesarios rescatados). Gaps largos diagnosticados como silencios naturales (no bugs). Nuevo script `parse_pipeline.py` con modo --compare para VAD off vs on. venv movido a `~/loro-venv` (fix path con espacios). Alias `loro` configurado. Commit `0441ff9`.
 - 2026-03-16 (sesión 17): 6 runs de validación. Run 5 y Run 6: 0.0% issue rate, 0 drops. Fixes aplicados: chunk cap 1.0→2.5s, TRANSLATION_CONTEXT_TURNS 3→1, prompt de contexto con [REFERENCE ONLY], xattr+codesign en run.sh, STALE_EMIT_RELAX_FACTOR 1.5→1.17. BUG-24 parcial: protocolo transcription_session.update corregido, pero REALTIME_SESSION_MODEL sigue siendo incorrecto (gpt-4o-mini-transcribe → necesita gpt-4o-realtime-preview). Métricas Run 6: avg=2.04s p50=1.73s p95=3.26s, premium ratio 13.5% (excede cap). Commits `fa2d665`, `75fcabf`.
 - 2026-03-18 (sesión 19, 2 Claudes en paralelo): BUG-24 code fix (modelo removido de connect(), timeout 5s). BUG-25: cap premium corregido (_select_route). BUG-26: STALE_EMIT_RELAX_FACTOR=1.55 en .env. BUG-06: asyncio.wait_for con timeout en 3 workers. BUG-08: exception logging con tipo real. BUG-09: threading.Lock en full_transcript_buffer. Protected term "Claude Code" hardcodeado. Commits `ad15ea5`, `7b08726`, `c87b1be`, `d539f0b`.
+- 2026-03-19 (sesión 20): Run 11 = mejor versión hasta la fecha (issue_rate=0.0%, error_events=0). BUG-24 desactivado definitivamente (REALTIME=0). Ghost translations eliminadas (TRANSLATION_CONTEXT_TURNS=0 + _filter_already_emitted_sentences en main.py). Fix capitalización en _merge_fragments. Timing: MERGE_FLUSH_SECONDS 0.70→1.0, COMMIT_MAX_AGE_SECONDS 1.4→1.8. Run 12 pendiente para validar mejoras de calidad.

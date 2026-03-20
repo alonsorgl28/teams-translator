@@ -137,6 +137,7 @@ class WhisperTranscriptionService:
 
     def reset_context(self) -> None:
         self._prompt_context = ""
+        self._active_model_index = 0
 
     def _build_request_kwargs(self, *, model_name: str, audio_file: io.BytesIO, prompt: Optional[str]) -> dict[str, object]:
         kwargs: dict[str, object] = {
