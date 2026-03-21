@@ -302,12 +302,14 @@ class OverlayWindow(QWidget):
     debug_toggled = pyqtSignal(bool)
     language_settings_changed = pyqtSignal(str, str)
     audio_source_changed = pyqtSignal(str)
+    meeting_mode_changed = pyqtSignal(bool)
 
     def __init__(self) -> None:
         super().__init__()
         self._drag_offset: Optional[QPoint] = None
         self._listening = False
         self._debug_enabled = False
+        self._meeting_mode = False
 
         self._brand_name = (os.getenv("APP_BRAND_NAME") or "Loro").strip() or "Loro"
         self._source_language = (os.getenv("SOURCE_LANGUAGE") or "Auto-detect").strip() or "Auto-detect"
@@ -402,6 +404,10 @@ class OverlayWindow(QWidget):
             # Keep the live experience clean by default on every new run.
             self._history_expanded = False
             self._tools_panel_open = False
+        self._refresh_state_ui()
+
+    def set_meeting_summary(self, text: str) -> None:
+        self.meeting_summary_label.setText(text)
         self._refresh_state_ui()
 
     def set_status(self, message: str) -> None:
@@ -533,6 +539,12 @@ class OverlayWindow(QWidget):
 
         top_row.addStretch(1)
 
+        self.meeting_mode_button = QPushButton("Meeting")
+        self.meeting_mode_button.setObjectName("meetingButton")
+        self.meeting_mode_button.setCheckable(True)
+        self.meeting_mode_button.toggled.connect(self._on_meeting_mode_toggled)
+        top_row.addWidget(self.meeting_mode_button)
+
         self.user_button = QPushButton("≡")
         self.user_button.setObjectName("iconButton")
         self.user_button.setCheckable(True)
@@ -578,6 +590,12 @@ class OverlayWindow(QWidget):
         button_row.addWidget(self.start_stop_button)
         button_row.addStretch(1)
         idle_layout.addLayout(button_row)
+
+        self.meeting_hint_label = QLabel("Transcription only · no translation · audio goes direct to Whisper")
+        self.meeting_hint_label.setObjectName("meetingHintLabel")
+        self.meeting_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.meeting_hint_label.setFont(self._make_ui_font(11))
+        idle_layout.addWidget(self.meeting_hint_label)
 
         idle_layout.addStretch(1)
         layout.addWidget(self.idle_frame)
@@ -627,6 +645,13 @@ class OverlayWindow(QWidget):
         self.transcript_view.setFont(self._make_monospace_font(read_int_env("OVERLAY_FONT_SIZE", 18)))
         self.transcript_view.setMinimumHeight(96)
         live_layout.addWidget(self.transcript_view)
+
+        self.meeting_summary_label = QLabel("")
+        self.meeting_summary_label.setObjectName("meetingSummaryLabel")
+        self.meeting_summary_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.meeting_summary_label.setFont(self._make_ui_font(12))
+        self.meeting_summary_label.setWordWrap(True)
+        live_layout.addWidget(self.meeting_summary_label)
 
         layout.addWidget(self.live_frame)
 
@@ -680,6 +705,11 @@ class OverlayWindow(QWidget):
         self.status_label.setFont(self._make_ui_font(12))
         self.status_label.setMaximumWidth(500)
         footer_row.addWidget(self.status_label, stretch=1)
+
+        self.meeting_export_button = QPushButton("Export")
+        self.meeting_export_button.setObjectName("meetingExportButton")
+        self.meeting_export_button.clicked.connect(self._on_export_clicked)
+        footer_row.addWidget(self.meeting_export_button, alignment=Qt.AlignmentFlag.AlignRight)
 
         self.stop_button = QPushButton("STOP")
         self.stop_button.setObjectName("stopButton")
@@ -754,6 +784,36 @@ class OverlayWindow(QWidget):
 
         self._install_shortcuts()
 
+    def showEvent(self, event: object) -> None:
+        super().showEvent(event)  # type: ignore[misc]
+        if not getattr(self, "_vibrancy_applied", False):
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(80, self._apply_native_vibrancy)
+
+    def _apply_native_vibrancy(self) -> None:
+        if getattr(self, "_vibrancy_applied", False):
+            return
+        try:
+            from native_vibrancy import apply_vibrancy
+            success = apply_vibrancy(self, corner_radius=22.0, material="hud")
+            self._vibrancy_applied = success
+            if success:
+                self._apply_vibrancy_stylesheet()
+        except Exception:
+            self._vibrancy_applied = False
+
+    def _apply_vibrancy_stylesheet(self) -> None:
+        """Slight tint reduction so NSVisualEffectView shows through more."""
+        self._panel.setStyleSheet(
+            """
+            #overlayPanel {
+                background-color: rgba(14, 18, 26, 130);
+                border: 1px solid rgba(255, 255, 255, 14);
+                border-radius: 22px;
+            }
+            """
+        )
+
     def _apply_window_style(self) -> None:
         self.setWindowTitle(f"{self._brand_name} - Universal Real-Time Audio Translator")
         self.setWindowFlags(
@@ -770,13 +830,8 @@ class OverlayWindow(QWidget):
         self.setStyleSheet(
             """
             #overlayPanel {
-                background-color: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(30, 35, 43, 236),
-                    stop:0.52 rgba(26, 31, 39, 232),
-                    stop:1 rgba(24, 28, 35, 238)
-                );
-                border: 1px solid rgba(170, 180, 196, 74);
+                background-color: rgba(14, 18, 26, 160);
+                border: 1px solid rgba(255, 255, 255, 12);
                 border-radius: 22px;
             }
             #brandLabel {
@@ -802,6 +857,25 @@ class OverlayWindow(QWidget):
                 background-color: rgba(89, 102, 122, 92);
                 color: rgba(238, 243, 250, 214);
             }
+            #meetingButton {
+                min-height: 22px;
+                max-height: 22px;
+                border-radius: 9px;
+                background-color: rgba(48, 56, 70, 160);
+                color: rgba(180, 190, 208, 170);
+                border: 1px solid rgba(120, 135, 158, 80);
+                padding: 0px 10px;
+                font-size: 11px;
+                letter-spacing: 0.8px;
+            }
+            #meetingButton:hover {
+                background-color: rgba(62, 72, 88, 190);
+            }
+            #meetingButton:checked {
+                background-color: rgba(45, 80, 58, 210);
+                color: rgba(130, 220, 160, 230);
+                border: 1px solid rgba(80, 170, 110, 130);
+            }
             #idleFrame {
                 background-color: transparent;
             }
@@ -826,8 +900,8 @@ class OverlayWindow(QWidget):
                 background-color: transparent;
             }
             #subtitleBox {
-                background-color: rgba(12, 15, 21, 174);
-                border: 1px solid rgba(183, 194, 209, 50);
+                background-color: rgba(0, 0, 0, 70);
+                border: 1px solid rgba(255, 255, 255, 10);
                 border-radius: 18px;
             }
             #subtitlePrev {
@@ -843,15 +917,15 @@ class OverlayWindow(QWidget):
                 font-weight: 470;
             }
             #liveTranscript {
-                background-color: rgba(12, 14, 20, 182);
-                color: rgba(228, 235, 244, 216);
-                border: 1px solid rgba(181, 192, 208, 56);
+                background-color: rgba(0, 0, 0, 55);
+                color: rgba(235, 242, 252, 230);
+                border: 1px solid rgba(255, 255, 255, 8);
                 border-radius: 14px;
-                padding: 8px;
+                padding: 10px;
             }
             #historyFrame {
-                background-color: rgba(11, 13, 18, 198);
-                border: 1px solid rgba(168, 182, 203, 52);
+                background-color: rgba(0, 0, 0, 80);
+                border: 1px solid rgba(255, 255, 255, 8);
                 border-radius: 16px;
             }
             #historyTitle {
@@ -878,6 +952,31 @@ class OverlayWindow(QWidget):
             #statusLabel {
                 color: rgba(211, 219, 230, 134);
                 font-size: 11px;
+            }
+            #meetingHintLabel {
+                color: rgba(130, 210, 160, 170);
+                font-size: 11px;
+                padding: 4px 0px 2px 0px;
+            }
+            #meetingSummaryLabel {
+                color: rgba(180, 195, 215, 190);
+                font-size: 12px;
+                padding: 8px 16px;
+                background-color: rgba(20, 26, 34, 140);
+                border-radius: 10px;
+                margin: 4px 0px;
+            }
+            #meetingExportButton {
+                background-color: rgba(40, 65, 52, 180);
+                color: rgba(130, 210, 160, 220);
+                border: 1px solid rgba(80, 160, 110, 120);
+                border-radius: 12px;
+                font-size: 12px;
+                padding: 4px 12px;
+                min-height: 34px;
+            }
+            #meetingExportButton:hover {
+                background-color: rgba(50, 82, 65, 210);
             }
             #stopButton {
                 background-color: rgba(67, 73, 84, 168);
@@ -953,13 +1052,20 @@ class OverlayWindow(QWidget):
         self.idle_frame.setVisible(not self._listening)
         self.live_frame.setVisible(self._listening)
 
-        self.subtitle_box.setVisible(self._listening)
-        self.transcript_view.setVisible(self._listening and self._tools_panel_open and self._subtitle_mode == "list")
+        has_meeting_content = self._meeting_mode and bool(self.full_transcript_buffer)
+        self.subtitle_box.setVisible(self._listening and not self._meeting_mode)
+        show_transcript = (
+            (self._listening and self._meeting_mode)
+            or has_meeting_content
+            or (self._listening and self._tools_panel_open and self._subtitle_mode == "list")
+        )
+        self.transcript_view.setVisible(show_transcript)
 
         self.live_dot.setVisible(self._listening)
         self.live_label.setVisible(self._listening)
+        self.meeting_export_button.setVisible(has_meeting_content)
         self.stop_button.setVisible(self._listening)
-        self.footer_frame.setVisible(self._listening)
+        self.footer_frame.setVisible(self._listening or has_meeting_content)
 
         self.status_label.setVisible(self._should_show_status_label(self.status_label.text()))
         self.history_frame.setVisible(self._listening and self._tools_panel_open and self._history_expanded)
@@ -967,16 +1073,41 @@ class OverlayWindow(QWidget):
         self.tools_frame.setVisible(show_advanced_tools)
         self.debug_label.setVisible(show_advanced_tools and self._debug_enabled)
 
-        self.start_stop_button.setText("START")
+        self.start_stop_button.setText("RECORD" if self._meeting_mode else "START")
         self.user_button.setVisible(self._debug_enabled)
         self.user_button.setChecked(self._tools_panel_open and self._debug_enabled)
 
-        if self._listening:
+        self.meeting_hint_label.setVisible(self._meeting_mode and not self._listening)
+        self.meeting_summary_label.setVisible(has_meeting_content and not self._listening)
+
+        if self._meeting_mode:
+            self.transcript_view.setFont(self._make_ui_font(14))
+            self.transcript_view.setMinimumHeight(240)
+        else:
+            self.transcript_view.setFont(self._make_monospace_font(read_int_env("OVERLAY_FONT_SIZE", 18)))
+            self.transcript_view.setMinimumHeight(96)
+
+        if self._listening and self._meeting_mode:
+            self.live_label.setText("REC")
+            self.live_dot.setStyleSheet("background-color: #f0a030; border-radius: 6px;")
+        else:
+            self.live_label.setText("LIVE")
+            self.live_dot.setStyleSheet("")
+
+        if self._listening and self._meeting_mode:
+            self.setMinimumHeight(420)
+            if self.height() < 420:
+                self.resize(max(self.width(), 840), 440)
+        elif self._listening:
             self.setMinimumHeight(258)
             if self.height() < 258:
                 self.resize(max(self.width(), 840), 266)
+        elif has_meeting_content:
+            self.setMinimumHeight(320)
+            if self.height() < 320:
+                self.resize(max(self.width(), 840), 340)
         else:
-            target_idle_height = 154
+            target_idle_height = 154 if not self._meeting_mode else 178
             self.setMinimumHeight(target_idle_height)
             if self.height() != target_idle_height:
                 self.resize(max(self.width(), 840), target_idle_height)
@@ -985,6 +1116,11 @@ class OverlayWindow(QWidget):
         next_state = not self._listening
         self.set_listening(next_state)
         self.toggle_listening.emit(next_state)
+
+    def _on_meeting_mode_toggled(self, checked: bool) -> None:
+        self._meeting_mode = checked
+        self._refresh_state_ui()
+        self.meeting_mode_changed.emit(checked)
 
     def _on_history_toggled(self, checked: bool) -> None:
         self._history_expanded = checked
@@ -1214,7 +1350,8 @@ class OverlayWindow(QWidget):
     @staticmethod
     def _make_ui_font(point_size: int, bold: bool = False) -> QFont:
         font = QFont()
-        font.setFamilies(["Avenir Next", "Helvetica Neue", "Inter", "Arial", "Sans"])
+        # .AppleSystemUIFont resolves to SF Pro on macOS
+        font.setFamilies([".AppleSystemUIFont", "SF Pro", "Helvetica Neue", "Arial"])
         font.setPointSize(point_size)
         font.setBold(bold)
         return font

@@ -506,7 +506,9 @@ class MeetingTranslatorController:
         self.ui.debug_toggled.connect(self._on_debug_toggled)
         self.ui.language_settings_changed.connect(self._on_language_settings_changed)
         self.ui.audio_source_changed.connect(self._on_audio_source_changed)
+        self.ui.meeting_mode_changed.connect(self._on_meeting_mode_changed)
         self.ui.set_debug_mode(self.debug_enabled)
+        self.meeting_mode = False
 
         self.ui.set_status(
             f"Idle. Target language: {self.target_language}. Select VB-Cable/BlackHole as system output."
@@ -661,7 +663,16 @@ class MeetingTranslatorController:
             logging.info("metrics_session_summary %s", summary)
 
         self.ui.set_listening(False)
-        self.ui.set_status("Stopped.")
+        if self.meeting_mode:
+            elapsed = (datetime.now() - self._session_anchor_at).total_seconds()
+            mins = int(elapsed // 60)
+            secs = int(elapsed % 60)
+            seg_count = len(self.ui.full_transcript_buffer)
+            self.ui.set_meeting_summary(
+                f"Meeting ended  ·  {mins}m {secs}s  ·  {seg_count} segments  ·  Export to save transcript"
+            )
+        else:
+            self.ui.set_status("Stopped.")
 
     def shutdown_sync(self) -> None:
         self._replay_completion_timer.stop()
@@ -993,6 +1004,18 @@ class MeetingTranslatorController:
                 source_text, source_text_raw, source_language, source_metrics = pending_source
                 source_metrics["source_text_raw"] = source_text_raw
                 source_metrics["source_text_sanitized"] = source_text
+
+                # MM-02: meeting mode bypasses translation and all quality gates
+                if self.meeting_mode:
+                    self._emit_segment(
+                        translated_text=source_text,
+                        captured_at=source_metrics["captured_at"],
+                        source_language=source_language,
+                        api_time=float(source_metrics["transcription_time_s"]),
+                        metrics_data=source_metrics,
+                    )
+                    continue
+
                 started = perf_counter()
                 translation_start_ts = datetime.now()
                 confidence_score = self.segment_quality.confidence_from_source(source_text)
@@ -1439,6 +1462,13 @@ class MeetingTranslatorController:
         else:
             self.listener._preferred_device = None
         self.ui.set_status("Audio source updated. Restart listening to apply it.")
+
+    def _on_meeting_mode_changed(self, active: bool) -> None:
+        self.meeting_mode = active
+        if active:
+            self.ui.set_status("Meeting mode: transcription only (no translation).")
+        else:
+            self.ui.set_status(f"Translation mode: {self.target_language}.")
 
     def _full_transcript_text(self) -> str:
         if self.ui.save_session_enabled:
@@ -2110,6 +2140,15 @@ class MeetingTranslatorController:
         if self._pending_source_captured_at is not None:
             age_s = (datetime.now() - self._pending_source_captured_at).total_seconds()
         has_terminal_punctuation = re.search(r"[.!?]\s*$", pending) is not None
+        # Meeting mode: accumulate until sentence boundary, 12+ words, or 4s timeout
+        if self.meeting_mode:
+            if has_terminal_punctuation and word_count >= 4:
+                return True
+            if word_count >= 12:
+                return True
+            if age_s is not None and age_s >= 4.0 and word_count >= 3:
+                return True
+            return False
         if (
             self.strict_en_es_source_guard
             and (self.target_language or "").strip().lower() == "spanish"
@@ -2499,6 +2538,11 @@ class MeetingTranslatorController:
         return word_count >= target_words and len(pending) >= self.emit_min_chars
 
     def _format_timestamp(self, timestamp: datetime) -> str:
+        if self.meeting_mode:
+            elapsed = max(0.0, (timestamp - self._session_anchor_at).total_seconds())
+            mins = int(elapsed // 60)
+            secs = int(elapsed % 60)
+            return f"{mins:02d}:{secs:02d}"
         return timestamp.strftime("%M:%S" if self.short_timestamps else "%H:%M:%S")
 
 
