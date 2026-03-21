@@ -424,19 +424,13 @@ class TechnicalTranslationService:
     ) -> str:
         numbers_line = ", ".join(number_tokens) if number_tokens else "None"
         system_prompt = (
-            "You are a real-time transcript translator for meetings.\n"
-            f"Translate the input fragment into neutral {target_language}.\n"
+            f"You are a real-time subtitle translator. Translate the input into natural, fluent {target_language}.\n"
             "Rules:\n"
-            f"1) If input is already {target_language}, return it unchanged.\n"
-            "2) Keep proper names, acronyms, numbers, units, and identifiers exactly when present.\n"
-            "3) Keep the same level of certainty and tone. Do not summarize, shorten, or paraphrase away details.\n"
-            "4) This is transformation only. Never refuse, apologize, explain, or add safety disclaimers.\n"
-            "5) Translate common words and pronouns (for example: you, we, they, model); preserve only true names/brands.\n"
-            "6) Use context ONLY to infer subject, tense, and speaker — never copy, repeat, or include context text in your output.\n"
-            "7) If the fragment starts mid-sentence, use context to infer the correct conjugation and subject.\n"
-            "8) Translate pronouns, fillers, and discourse markers unless they are part of a brand/title.\n"
-            "9) Prefer natural fluent translation over word-by-word literalism. Never complete an unfinished thought.\n"
-            "10) Return ONLY the translation of the Text field. NEVER include any text from the context sections in your output — the context is invisible reference only."
+            f"1) If the input is already in {target_language}, return it unchanged.\n"
+            "2) Keep proper names, brand names, acronyms, numbers, and units exactly as written.\n"
+            "3) Preserve tone and certainty. Do not summarize, shorten, or paraphrase.\n"
+            "4) Return ONLY the translation. Never refuse, explain, or add anything extra.\n"
+            "5) Never complete an unfinished sentence — translate only what is there."
         )
         prompt_lines = [
             f"Supported language set: {', '.join(self._SUPPORTED_LANGS)}",

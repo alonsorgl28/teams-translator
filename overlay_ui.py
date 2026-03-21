@@ -57,107 +57,110 @@ class SettingsDialog(QDialog):
         self._audio_sources = audio_sources or ["System loopback (default)"]
         self.setWindowTitle(f"{self._brand_name} Settings")
         self.setModal(True)
-        self.setMinimumWidth(820)
+        self.setFixedWidth(480)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 22)
-        root.setSpacing(14)
+        root.setContentsMargins(28, 24, 28, 24)
+        root.setSpacing(20)
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(10)
-        root.addLayout(top_row)
+        # ── Languages card ──
+        lang_card = QFrame()
+        lang_card.setObjectName("settingsCard")
+        lang_card_layout = QVBoxLayout(lang_card)
+        lang_card_layout.setContentsMargins(18, 16, 18, 16)
+        lang_card_layout.setSpacing(14)
 
-        self.back_button = QPushButton("Back")
-        self.back_button.setObjectName("ghostButton")
-        self.back_button.clicked.connect(self.reject)
-        top_row.addWidget(self.back_button, alignment=Qt.AlignmentFlag.AlignLeft)
-
-        top_row.addStretch(1)
-
-        brand = QLabel(self._brand_name)
-        brand.setObjectName("settingsBrand")
-        brand.setFont(self._make_ui_font(16, bold=True))
-        top_row.addWidget(brand, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        top_row.addStretch(1)
-
-        self.minimize_button = QPushButton("-")
-        self.minimize_button.setObjectName("tinyButton")
-        self.minimize_button.clicked.connect(self.showMinimized)
-        top_row.addWidget(self.minimize_button)
-
-        self.close_button = QPushButton("X")
-        self.close_button.setObjectName("tinyButton")
-        self.close_button.clicked.connect(self.reject)
-        top_row.addWidget(self.close_button)
-
-        section_title = QLabel("Languages")
-        section_title.setObjectName("sectionTitle")
-        section_title.setFont(self._make_ui_font(14, bold=True))
-        root.addWidget(section_title)
+        lang_header = QLabel("LANGUAGES")
+        lang_header.setObjectName("cardHeader")
+        lang_header.setFont(self._make_ui_font(11))
+        lang_card_layout.addWidget(lang_header)
 
         lang_row = QHBoxLayout()
-        lang_row.setSpacing(18)
-        root.addLayout(lang_row)
+        lang_row.setSpacing(14)
+        lang_card_layout.addLayout(lang_row)
 
         left_lang = QVBoxLayout()
-        left_lang.setSpacing(6)
+        left_lang.setSpacing(5)
         lang_row.addLayout(left_lang)
-
         from_label = QLabel("From")
         from_label.setObjectName("fieldLabel")
+        from_label.setFont(self._make_ui_font(11))
         left_lang.addWidget(from_label)
         self.from_combo = QComboBox()
         self.from_combo.addItems(self.DEFAULT_LANG_OPTIONS)
         self._set_combo_value(self.from_combo, source_language, default="Auto-detect")
         left_lang.addWidget(self.from_combo)
 
-        mid_arrow = QLabel("->")
-        mid_arrow.setObjectName("arrowLabel")
-        mid_arrow.setFont(self._make_ui_font(20, bold=True))
-        mid_arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lang_row.addWidget(mid_arrow, alignment=Qt.AlignmentFlag.AlignCenter)
+        arrow_label = QLabel("\u2192")
+        arrow_label.setObjectName("arrowLabel")
+        arrow_label.setFont(self._make_ui_font(16))
+        arrow_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        arrow_label.setFixedWidth(28)
+        lang_row.addWidget(arrow_label, alignment=Qt.AlignmentFlag.AlignBottom)
 
         right_lang = QVBoxLayout()
-        right_lang.setSpacing(6)
+        right_lang.setSpacing(5)
         lang_row.addLayout(right_lang)
-
         to_label = QLabel("To")
         to_label.setObjectName("fieldLabel")
+        to_label.setFont(self._make_ui_font(11))
         right_lang.addWidget(to_label)
         self.to_combo = QComboBox()
         self.to_combo.addItems(self.DEFAULT_TARGET_OPTIONS)
         self._set_combo_value(self.to_combo, target_language, default="Spanish")
         right_lang.addWidget(self.to_combo)
 
-        audio_title = QLabel("Audio Source")
-        audio_title.setObjectName("sectionTitle")
-        audio_title.setFont(self._make_ui_font(14, bold=True))
-        root.addWidget(audio_title)
+        root.addWidget(lang_card)
+
+        # ── Audio Source card ──
+        audio_card = QFrame()
+        audio_card.setObjectName("settingsCard")
+        audio_card_layout = QVBoxLayout(audio_card)
+        audio_card_layout.setContentsMargins(18, 16, 18, 16)
+        audio_card_layout.setSpacing(12)
+
+        audio_header = QLabel("AUDIO SOURCE")
+        audio_header.setObjectName("cardHeader")
+        audio_header.setFont(self._make_ui_font(11))
+        audio_card_layout.addWidget(audio_header)
 
         self.audio_combo = QComboBox()
         self.audio_combo.addItems(self._audio_sources)
         self._set_combo_value(self.audio_combo, audio_source, default=self._audio_sources[0])
-        root.addWidget(self.audio_combo)
+        audio_card_layout.addWidget(self.audio_combo)
 
-        detected_banner = QLabel("BlackHole detected - select it above for echo-free voice")
+        detected_banner = QLabel("\u2713  BlackHole detected")
         detected_banner.setObjectName("detectedBanner")
-        detected_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        detected_banner.setWordWrap(True)
-        root.addWidget(detected_banner)
+        detected_banner.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        detected_banner.setFont(self._make_ui_font(12))
+        audio_card_layout.addWidget(detected_banner)
 
-        voice_title = QLabel("Voice Playback")
-        voice_title.setObjectName("sectionTitle")
-        voice_title.setFont(self._make_ui_font(14, bold=True))
-        root.addWidget(voice_title)
+        root.addWidget(audio_card)
 
-        beta_note = QLabel("Voice mode is in private beta\nRequest Access soon")
+        # ── Voice Playback card ──
+        voice_card = QFrame()
+        voice_card.setObjectName("settingsCard")
+        voice_card_layout = QVBoxLayout(voice_card)
+        voice_card_layout.setContentsMargins(18, 16, 18, 16)
+        voice_card_layout.setSpacing(8)
+
+        voice_header = QLabel("MEETINGS")
+        voice_header.setObjectName("cardHeader")
+        voice_header.setFont(self._make_ui_font(11))
+        voice_card_layout.addWidget(voice_header)
+
+        beta_note = QLabel("Coming soon")
         beta_note.setObjectName("betaNote")
-        beta_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        beta_note.setWordWrap(True)
-        root.addWidget(beta_note)
+        beta_note.setFont(self._make_ui_font(13))
+        voice_card_layout.addWidget(beta_note)
+
+        root.addWidget(voice_card)
+
+        # ── Bottom buttons ──
+        root.addStretch(1)
 
         bottom = QHBoxLayout()
+        bottom.setSpacing(10)
         bottom.addStretch(1)
         root.addLayout(bottom)
 
@@ -171,93 +174,105 @@ class SettingsDialog(QDialog):
         self.apply_button.clicked.connect(self.accept)
         bottom.addWidget(self.apply_button)
 
+        # Keep references for compatibility
+        self.back_button = self.cancel_button
+        self.minimize_button = None
+        self.close_button = None
+
         self.setStyleSheet(
             """
             QDialog {
-                background-color: #1f252f;
-                border: 1px solid rgba(128, 141, 160, 110);
-                border-radius: 18px;
+                background-color: rgba(28, 28, 30, 250);
+                border-radius: 14px;
             }
             QLabel {
-                color: #bcc7d4;
-                font-size: 12px;
+                color: rgba(255, 255, 255, 200);
+                font-size: 13px;
+                background: transparent;
             }
-            #settingsBrand {
-                color: #e3e9f1;
-                letter-spacing: 1.4px;
+            #settingsCard {
+                background-color: rgba(255, 255, 255, 8);
+                border: none;
+                border-radius: 12px;
             }
-            #sectionTitle {
-                color: #e9eef6;
-                font-size: 15px;
+            #cardHeader {
+                color: rgba(255, 255, 255, 90);
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 1.2px;
             }
             #fieldLabel {
-                color: #98a8bb;
+                color: rgba(255, 255, 255, 120);
+                font-size: 11px;
             }
             #arrowLabel {
-                color: #7f91a8;
-                min-width: 36px;
+                color: rgba(255, 255, 255, 70);
+                background: transparent;
             }
             #detectedBanner {
-                background-color: rgba(47, 77, 108, 124);
-                color: #b7d7f8;
-                border-radius: 12px;
-                padding: 11px;
-                border: 1px solid rgba(118, 150, 185, 136);
+                color: rgba(106, 172, 163, 220);
+                background: transparent;
+                padding: 2px 0px;
             }
             #betaNote {
-                background-color: rgba(34, 40, 50, 210);
-                color: #9fabb9;
-                border-radius: 12px;
-                border: 1px solid rgba(102, 116, 134, 110);
-                padding: 16px;
+                color: rgba(255, 255, 255, 80);
+                background: transparent;
+                padding: 4px 0px;
             }
             QPushButton {
-                background-color: rgba(49, 58, 72, 208);
-                color: #d1dae5;
-                border: 1px solid rgba(109, 123, 141, 158);
-                border-radius: 11px;
-                padding: 6px 14px;
-                min-height: 34px;
-                font-size: 12px;
+                background-color: rgba(255, 255, 255, 10);
+                color: rgba(255, 255, 255, 200);
+                border: none;
+                border-radius: 8px;
+                padding: 7px 18px;
+                min-height: 32px;
+                font-size: 13px;
             }
             QPushButton:hover {
-                background-color: rgba(63, 75, 92, 228);
-            }
-            #tinyButton {
-                min-width: 36px;
-                max-width: 36px;
-                min-height: 34px;
-                max-height: 34px;
-                padding: 0;
+                background-color: rgba(255, 255, 255, 18);
             }
             #ghostButton {
-                background-color: rgba(38, 46, 58, 188);
+                background-color: transparent;
+                color: rgba(255, 255, 255, 140);
+            }
+            #ghostButton:hover {
+                background-color: rgba(255, 255, 255, 8);
+                color: rgba(255, 255, 255, 200);
             }
             #applyButton {
-                background-color: rgba(62, 94, 132, 224);
-                border: 1px solid rgba(130, 167, 210, 180);
-                color: #eef4fb;
+                background-color: rgba(106, 172, 163, 180);
+                color: white;
+                font-weight: 600;
+                padding: 7px 24px;
+            }
+            #applyButton:hover {
+                background-color: rgba(106, 172, 163, 220);
             }
             QComboBox {
-                background-color: rgba(30, 36, 46, 232);
-                color: #d7dfea;
-                border: 1px solid rgba(102, 117, 136, 150);
-                border-radius: 12px;
+                background-color: rgba(255, 255, 255, 6);
+                color: rgba(255, 255, 255, 220);
+                border: 1px solid rgba(255, 255, 255, 10);
+                border-radius: 8px;
                 padding: 8px 12px;
-                min-height: 34px;
-                font-size: 14px;
+                min-height: 32px;
+                font-size: 13px;
+            }
+            QComboBox:hover {
+                background-color: rgba(255, 255, 255, 12);
             }
             QComboBox::drop-down {
                 border: none;
                 width: 24px;
             }
             QComboBox QAbstractItemView {
-                background-color: #1f252f;
-                color: #d7dfea;
-                border: 1px solid rgba(102, 117, 136, 150);
-                selection-background-color: rgba(92, 128, 172, 110);
-                selection-color: #f2f6fb;
+                background-color: rgba(44, 44, 46, 250);
+                color: rgba(255, 255, 255, 220);
+                border: 1px solid rgba(255, 255, 255, 12);
+                border-radius: 8px;
+                selection-background-color: rgba(106, 172, 163, 60);
+                selection-color: white;
                 outline: 0;
+                padding: 4px;
             }
             """
         )
@@ -281,7 +296,7 @@ class SettingsDialog(QDialog):
     @staticmethod
     def _make_ui_font(point_size: int, bold: bool = False) -> QFont:
         font = QFont()
-        font.setFamilies(["Avenir Next", "Helvetica Neue", "Inter", "Arial", "Sans"])
+        font.setFamilies([".AppleSystemUIFont", "SF Pro", "Helvetica Neue", "Arial"])
         font.setPointSize(point_size)
         font.setBold(bold)
         return font
@@ -525,8 +540,8 @@ class OverlayWindow(QWidget):
         self._panel = panel
 
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(22, 14, 22, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(6)
 
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
@@ -534,20 +549,16 @@ class OverlayWindow(QWidget):
 
         self.brand_label = QLabel(self._brand_name)
         self.brand_label.setObjectName("brandLabel")
-        self.brand_label.setFont(self._make_ui_font(14, bold=True))
+        self.brand_label.setFont(self._make_ui_font(13, bold=True))
         top_row.addWidget(self.brand_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         top_row.addStretch(1)
 
-        self.meeting_mode_button = QPushButton("Meeting")
-        self.meeting_mode_button.setObjectName("meetingButton")
-        self.meeting_mode_button.setCheckable(True)
-        self.meeting_mode_button.toggled.connect(self._on_meeting_mode_toggled)
-        top_row.addWidget(self.meeting_mode_button)
-
+        # Debug tools toggle — hidden unless debug mode is on
         self.user_button = QPushButton("≡")
         self.user_button.setObjectName("iconButton")
         self.user_button.setCheckable(True)
+        self.user_button.setVisible(False)
         self.user_button.clicked.connect(self._toggle_debug_tools)
         top_row.addWidget(self.user_button)
 
@@ -555,11 +566,6 @@ class OverlayWindow(QWidget):
         self.settings_button.setObjectName("iconButton")
         self.settings_button.clicked.connect(self._open_settings)
         top_row.addWidget(self.settings_button)
-
-        self.info_button = QPushButton("i")
-        self.info_button.setObjectName("iconButton")
-        self.info_button.clicked.connect(self._show_info_hint)
-        top_row.addWidget(self.info_button)
 
         self.minimize_button = QPushButton("–")
         self.minimize_button.setObjectName("iconButton")
@@ -574,27 +580,35 @@ class OverlayWindow(QWidget):
         self.idle_frame = QFrame()
         self.idle_frame.setObjectName("idleFrame")
         idle_layout = QVBoxLayout(self.idle_frame)
-        idle_layout.setContentsMargins(0, 8, 0, 10)
-        idle_layout.setSpacing(6)
+        idle_layout.setContentsMargins(0, 4, 0, 4)
+        idle_layout.setSpacing(4)
 
         idle_layout.addStretch(1)
 
         button_row = QHBoxLayout()
+        button_row.setSpacing(10)
         button_row.addStretch(1)
         self.start_stop_button = QPushButton("START")
         self.start_stop_button.setObjectName("startButton")
         self.start_stop_button.clicked.connect(self._on_start_stop_clicked)
-        self.start_stop_button.setMinimumSize(126, 40)
-        self.start_stop_button.setIcon(self._make_status_dot_icon("#2dd86f"))
+        self.start_stop_button.setMinimumSize(100, 32)
+        self.start_stop_button.setIcon(self._make_status_dot_icon("#6aaca3"))
         self.start_stop_button.setIconSize(QSize(8, 8))
         button_row.addWidget(self.start_stop_button)
+
+        self.meeting_mode_button = QPushButton("Meeting")
+        self.meeting_mode_button.setObjectName("meetingButton")
+        self.meeting_mode_button.setCheckable(True)
+        self.meeting_mode_button.toggled.connect(self._on_meeting_mode_toggled)
+        button_row.addWidget(self.meeting_mode_button)
+
         button_row.addStretch(1)
         idle_layout.addLayout(button_row)
 
-        self.meeting_hint_label = QLabel("Transcription only · no translation · audio goes direct to Whisper")
+        self.meeting_hint_label = QLabel("Transcription only · no translation")
         self.meeting_hint_label.setObjectName("meetingHintLabel")
         self.meeting_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.meeting_hint_label.setFont(self._make_ui_font(11))
+        self.meeting_hint_label.setFont(self._make_ui_font(10))
         idle_layout.addWidget(self.meeting_hint_label)
 
         idle_layout.addStretch(1)
@@ -603,8 +617,8 @@ class OverlayWindow(QWidget):
         self.live_frame = QFrame()
         self.live_frame.setObjectName("liveFrame")
         live_layout = QVBoxLayout(self.live_frame)
-        live_layout.setContentsMargins(0, 6, 0, 6)
-        live_layout.setSpacing(10)
+        live_layout.setContentsMargins(0, 2, 0, 2)
+        live_layout.setSpacing(6)
 
         self.top_rule = QFrame()
         self.top_rule.setObjectName("liveRule")
@@ -614,8 +628,8 @@ class OverlayWindow(QWidget):
         self.subtitle_box = QFrame()
         self.subtitle_box.setObjectName("subtitleBox")
         subtitle_layout = QVBoxLayout(self.subtitle_box)
-        subtitle_layout.setContentsMargins(24, 10, 24, 10)
-        subtitle_layout.setSpacing(5)
+        subtitle_layout.setContentsMargins(16, 6, 16, 6)
+        subtitle_layout.setSpacing(3)
 
         self.subtitle_prev_label = QLabel("")
         self.subtitle_prev_label.setObjectName("subtitlePrev")
@@ -628,7 +642,7 @@ class OverlayWindow(QWidget):
         self.subtitle_curr_label.setWordWrap(True)
         self.subtitle_curr_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         subtitle_layout.addWidget(self.subtitle_curr_label)
-        self.subtitle_box.setMinimumHeight(132)
+        self.subtitle_box.setMinimumHeight(80)
         live_layout.addWidget(self.subtitle_box)
 
         self.bottom_rule = QFrame()
@@ -714,8 +728,8 @@ class OverlayWindow(QWidget):
         self.stop_button = QPushButton("STOP")
         self.stop_button.setObjectName("stopButton")
         self.stop_button.clicked.connect(self._on_start_stop_clicked)
-        self.stop_button.setMinimumSize(112, 38)
-        self.stop_button.setIcon(self._make_status_dot_icon("#ff4a6a"))
+        self.stop_button.setMinimumSize(88, 30)
+        self.stop_button.setIcon(self._make_status_dot_icon("#ff6478"))
         self.stop_button.setIconSize(QSize(8, 8))
         footer_row.addWidget(self.stop_button, alignment=Qt.AlignmentFlag.AlignRight)
 
@@ -777,9 +791,9 @@ class OverlayWindow(QWidget):
             read_int_env("SUBTITLE_FONT_SIZE", self.DEFAULT_SUBTITLE_FONT_SIZE),
             bold=True,
         )
-        subtitle_curr_size = max(18, min(subtitle_curr_font.pointSize(), 23))
+        subtitle_curr_size = max(15, min(subtitle_curr_font.pointSize(), 19))
         self.subtitle_curr_label.setFont(self._make_ui_font(subtitle_curr_size))
-        self.subtitle_prev_label.setFont(self._make_ui_font(max(12, subtitle_curr_size - 8)))
+        self.subtitle_prev_label.setFont(self._make_ui_font(max(11, subtitle_curr_size - 6)))
         self._disable_focus_rings()
 
         self._install_shortcuts()
@@ -795,7 +809,7 @@ class OverlayWindow(QWidget):
             return
         try:
             from native_vibrancy import apply_vibrancy
-            success = apply_vibrancy(self, corner_radius=22.0, material="hud")
+            success = apply_vibrancy(self, corner_radius=16.0, material="hud")
             self._vibrancy_applied = success
             if success:
                 self._apply_vibrancy_stylesheet()
@@ -803,13 +817,13 @@ class OverlayWindow(QWidget):
             self._vibrancy_applied = False
 
     def _apply_vibrancy_stylesheet(self) -> None:
-        """Slight tint reduction so NSVisualEffectView shows through more."""
+        """Reduce panel opacity so NSVisualEffectView blur shows through."""
         self._panel.setStyleSheet(
             """
             #overlayPanel {
-                background-color: rgba(14, 18, 26, 130);
-                border: 1px solid rgba(255, 255, 255, 14);
-                border-radius: 22px;
+                background-color: rgba(10, 12, 18, 70);
+                border: 1px solid rgba(255, 255, 255, 28);
+                border-radius: 16px;
             }
             """
         )
@@ -824,164 +838,195 @@ class OverlayWindow(QWidget):
         self.setWindowFlag(Qt.WindowType.Tool, False)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMinimumSize(700, 146)
-        self.resize(840, 154)
+        self.setMinimumSize(520, 110)
+        self.resize(620, 118)
 
         self.setStyleSheet(
             """
+            /* ── Panel ── */
             #overlayPanel {
-                background-color: rgba(14, 18, 26, 160);
-                border: 1px solid rgba(255, 255, 255, 12);
-                border-radius: 22px;
+                background-color: rgba(14, 18, 26, 145);
+                border: 1px solid rgba(255, 255, 255, 22);
+                border-radius: 16px;
             }
+
+            /* ── Header ── */
             #brandLabel {
-                color: rgba(224, 230, 240, 196);
-                letter-spacing: 2.2px;
+                color: white;
+                letter-spacing: 1.8px;
                 padding-left: 4px;
             }
             #iconButton {
-                min-width: 24px;
-                min-height: 22px;
-                max-height: 22px;
-                border-radius: 7px;
+                min-width: 26px;
+                min-height: 24px;
+                max-height: 24px;
+                border-radius: 8px;
                 background-color: transparent;
-                color: rgba(194, 202, 215, 152);
+                color: rgba(255, 255, 255, 180);
                 border: none;
-                padding: 0px 4px;
-                font-size: 12px;
+                padding: 0px 5px;
+                font-size: 13px;
             }
             #iconButton:hover {
-                background-color: rgba(113, 124, 143, 46);
+                background-color: rgba(255, 255, 255, 18);
+                color: white;
             }
             #iconButton:checked {
-                background-color: rgba(89, 102, 122, 92);
-                color: rgba(238, 243, 250, 214);
+                background-color: rgba(255, 255, 255, 25);
+                color: white;
             }
+
+            /* ── Meeting toggle ── */
             #meetingButton {
-                min-height: 22px;
-                max-height: 22px;
-                border-radius: 9px;
-                background-color: rgba(48, 56, 70, 160);
-                color: rgba(180, 190, 208, 170);
-                border: 1px solid rgba(120, 135, 158, 80);
-                padding: 0px 10px;
+                min-height: 24px;
+                max-height: 24px;
+                border-radius: 12px;
+                background-color: rgba(255, 255, 255, 14);
+                color: rgba(255, 255, 255, 190);
+                border: none;
+                padding: 0px 12px;
                 font-size: 11px;
-                letter-spacing: 0.8px;
+                font-weight: 500;
+                letter-spacing: 0.6px;
             }
             #meetingButton:hover {
-                background-color: rgba(62, 72, 88, 190);
+                background-color: rgba(255, 255, 255, 24);
+                color: white;
             }
             #meetingButton:checked {
-                background-color: rgba(45, 80, 58, 210);
-                color: rgba(130, 220, 160, 230);
-                border: 1px solid rgba(80, 170, 110, 130);
+                background-color: rgba(106, 172, 163, 60);
+                color: rgba(106, 172, 163, 240);
+                border: none;
             }
+
+            /* ── Idle state ── */
             #idleFrame {
                 background-color: transparent;
             }
             #startButton {
-                background-color: rgba(63, 72, 87, 170);
-                color: rgba(232, 238, 246, 214);
-                border: 1px solid rgba(150, 165, 186, 90);
-                border-radius: 16px;
-                font-size: 14px;
-                font-weight: 500;
-                letter-spacing: 2.2px;
-                padding: 4px 16px;
+                background-color: rgba(255, 255, 255, 16);
+                color: white;
+                border: none;
+                border-radius: 20px;
+                font-size: 13px;
+                font-weight: 600;
+                letter-spacing: 2.0px;
+                padding: 6px 20px;
             }
             #startButton:hover {
-                background-color: rgba(78, 89, 106, 188);
+                background-color: rgba(255, 255, 255, 28);
             }
+
+            /* ── Live frame ── */
             #liveRule {
-                background-color: rgba(171, 183, 199, 30);
+                background-color: rgba(255, 255, 255, 12);
                 border: none;
             }
             #liveFrame {
                 background-color: transparent;
             }
+
+            /* ── Subtitles (cinema mode) ── */
             #subtitleBox {
-                background-color: rgba(0, 0, 0, 70);
-                border: 1px solid rgba(255, 255, 255, 10);
-                border-radius: 18px;
+                background-color: transparent;
+                border: none;
+                border-radius: 0px;
             }
             #subtitlePrev {
-                color: rgba(206, 216, 230, 162);
+                color: rgba(255, 255, 255, 170);
                 font-weight: 420;
             }
             #subtitleCurr {
-                color: rgba(249, 251, 255, 252);
-                font-weight: 560;
+                color: white;
+                font-weight: 600;
             }
             #subtitleCurr[preview="true"] {
-                color: rgba(217, 225, 236, 196);
-                font-weight: 470;
+                color: rgba(255, 255, 255, 180);
+                font-weight: 460;
             }
+
+            /* ── Transcript (list / meeting mode) ── */
             #liveTranscript {
-                background-color: rgba(0, 0, 0, 55);
-                color: rgba(235, 242, 252, 230);
-                border: 1px solid rgba(255, 255, 255, 8);
+                background-color: rgba(0, 0, 0, 20);
+                color: rgba(255, 255, 255, 235);
+                border: 1px solid rgba(255, 255, 255, 12);
                 border-radius: 14px;
                 padding: 10px;
             }
+
+            /* ── History drawer ── */
             #historyFrame {
-                background-color: rgba(0, 0, 0, 80);
-                border: 1px solid rgba(255, 255, 255, 8);
+                background-color: rgba(0, 0, 0, 40);
+                border: 1px solid rgba(255, 255, 255, 10);
                 border-radius: 16px;
             }
             #historyTitle {
-                color: rgba(176, 197, 227, 192);
+                color: rgba(255, 255, 255, 140);
             }
             #historyView {
                 background-color: transparent;
-                color: rgba(190, 204, 224, 188);
+                color: rgba(255, 255, 255, 160);
                 border: none;
             }
+
+            /* ── Debug tools ── */
             #toolsFrame {
-                background-color: rgba(12, 14, 20, 138);
-                border: 1px solid rgba(175, 186, 202, 44);
+                background-color: rgba(0, 0, 0, 50);
+                border: 1px solid rgba(255, 255, 255, 12);
                 border-radius: 16px;
             }
+
+            /* ── Footer ── */
             #liveDot {
-                background-color: #38d66f;
+                background-color: rgba(106, 172, 163, 255);
                 border-radius: 6px;
             }
             #liveLabel {
-                color: rgba(138, 220, 173, 190);
-                letter-spacing: 3.2px;
+                color: rgba(106, 172, 163, 220);
+                letter-spacing: 2.6px;
             }
             #statusLabel {
-                color: rgba(211, 219, 230, 134);
+                color: rgba(255, 255, 255, 100);
                 font-size: 11px;
             }
+            #footerFrame {
+                background-color: transparent;
+            }
+
+            /* ── Meeting mode labels ── */
             #meetingHintLabel {
-                color: rgba(130, 210, 160, 170);
+                color: rgba(106, 172, 163, 180);
                 font-size: 11px;
                 padding: 4px 0px 2px 0px;
             }
             #meetingSummaryLabel {
-                color: rgba(180, 195, 215, 190);
+                color: rgba(255, 255, 255, 160);
                 font-size: 12px;
                 padding: 8px 16px;
-                background-color: rgba(20, 26, 34, 140);
+                background-color: rgba(0, 0, 0, 30);
                 border-radius: 10px;
                 margin: 4px 0px;
             }
+
+            /* ── Export button (teal accent) ── */
             #meetingExportButton {
-                background-color: rgba(40, 65, 52, 180);
-                color: rgba(130, 210, 160, 220);
-                border: 1px solid rgba(80, 160, 110, 120);
+                background-color: rgba(106, 172, 163, 30);
+                color: rgba(106, 172, 163, 230);
+                border: 1px solid rgba(106, 172, 163, 60);
                 border-radius: 12px;
                 font-size: 12px;
-                padding: 4px 12px;
+                padding: 4px 14px;
                 min-height: 34px;
             }
             #meetingExportButton:hover {
-                background-color: rgba(50, 82, 65, 210);
+                background-color: rgba(106, 172, 163, 50);
             }
+
+            /* ── Stop button ── */
             #stopButton {
-                background-color: rgba(67, 73, 84, 168);
-                color: rgba(246, 190, 200, 220);
-                border: 1px solid rgba(217, 165, 176, 132);
+                background-color: rgba(255, 255, 255, 10);
+                color: rgba(255, 100, 120, 220);
+                border: none;
                 border-radius: 16px;
                 font-size: 12px;
                 font-weight: 500;
@@ -989,31 +1034,32 @@ class OverlayWindow(QWidget):
                 padding: 4px 14px;
             }
             #stopButton:hover {
-                background-color: rgba(89, 78, 87, 202);
+                background-color: rgba(255, 100, 120, 25);
             }
+
+            /* ── Debug ── */
             #debugLabel {
-                color: rgba(155, 232, 184, 214);
+                color: rgba(106, 172, 163, 200);
                 font-size: 12px;
             }
             #shortcutHint {
-                color: rgba(176, 188, 206, 138);
+                color: rgba(255, 255, 255, 90);
             }
-            #footerFrame {
-                background-color: transparent;
-            }
+
+            /* ── Base defaults ── */
             QLabel, QCheckBox {
-                color: rgba(214, 223, 236, 198);
+                color: rgba(255, 255, 255, 200);
             }
             QPushButton {
-                background-color: rgba(57, 66, 81, 162);
-                color: rgba(228, 236, 246, 220);
-                border: 1px solid rgba(171, 184, 203, 74);
+                background-color: rgba(255, 255, 255, 10);
+                color: rgba(255, 255, 255, 210);
+                border: 1px solid rgba(255, 255, 255, 14);
                 border-radius: 10px;
                 padding: 3px 10px;
                 min-height: 28px;
             }
             QPushButton:hover {
-                background-color: rgba(72, 84, 102, 196);
+                background-color: rgba(255, 255, 255, 20);
             }
             QPushButton:focus {
                 outline: none;
@@ -1089,28 +1135,30 @@ class OverlayWindow(QWidget):
 
         if self._listening and self._meeting_mode:
             self.live_label.setText("REC")
-            self.live_dot.setStyleSheet("background-color: #f0a030; border-radius: 6px;")
+            self.live_dot.setStyleSheet("background-color: rgba(240, 160, 50, 255); border-radius: 6px;")
+            self.live_label.setStyleSheet("color: rgba(240, 160, 50, 200); letter-spacing: 2.6px;")
         else:
             self.live_label.setText("LIVE")
             self.live_dot.setStyleSheet("")
+            self.live_label.setStyleSheet("")
 
         if self._listening and self._meeting_mode:
-            self.setMinimumHeight(420)
-            if self.height() < 420:
-                self.resize(max(self.width(), 840), 440)
-        elif self._listening:
-            self.setMinimumHeight(258)
-            if self.height() < 258:
-                self.resize(max(self.width(), 840), 266)
-        elif has_meeting_content:
             self.setMinimumHeight(320)
             if self.height() < 320:
-                self.resize(max(self.width(), 840), 340)
+                self.resize(max(self.width(), 620), 340)
+        elif self._listening:
+            self.setMinimumHeight(180)
+            if self.height() < 180:
+                self.resize(max(self.width(), 620), 190)
+        elif has_meeting_content:
+            self.setMinimumHeight(250)
+            if self.height() < 250:
+                self.resize(max(self.width(), 620), 270)
         else:
-            target_idle_height = 154 if not self._meeting_mode else 178
+            target_idle_height = 118 if not self._meeting_mode else 140
             self.setMinimumHeight(target_idle_height)
             if self.height() != target_idle_height:
-                self.resize(max(self.width(), 840), target_idle_height)
+                self.resize(max(self.width(), 620), target_idle_height)
 
     def _on_start_stop_clicked(self) -> None:
         next_state = not self._listening
