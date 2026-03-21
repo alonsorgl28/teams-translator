@@ -40,10 +40,10 @@
   - `/Users/hola/Documents/New project/tests/` (audio buffer/UI/dedup/metrics/translation/visualización)
 
 ## Backlog inmediato (siguiente iteración)
-1. Run 12 — validar Fix B: capitalización merge + timing 1.0s/1.8s. ¿Menos frases cortadas?
-2. Calidad traducción — evaluar TRANSLATION_CONTEXT_TURNS=1 con prompt mejorado que prevenga ghost.
-3. BUG-16 — regex sin tests en translation_service.py.
-4. BUG-20 — estado corrupto en buffer.
+1. Run 12 — validar prompt simplificado (10→5 reglas) + MAX_TOKENS 80→120. ¿Menos frases cortadas?
+2. BUG-16 — regex sin tests en translation_service.py.
+3. BUG-20 — estado corrupto en buffer: investigar y fijar.
+4. Meeting Mode (MM-01/02) — validar en uso real (rama codex/rebrand-to-loro).
 5. F07/F08 — packaging PyInstaller macOS + Windows.
 
 ## Registro de cambios (resumen)
@@ -60,3 +60,5 @@
 - 2026-03-18 (sesión 19, 2 Claudes en paralelo): BUG-24 code fix (modelo removido de connect(), timeout 5s). BUG-25: cap premium corregido (_select_route). BUG-26: STALE_EMIT_RELAX_FACTOR=1.55 en .env. BUG-06: asyncio.wait_for con timeout en 3 workers. BUG-08: exception logging con tipo real. BUG-09: threading.Lock en full_transcript_buffer. Protected term "Claude Code" hardcodeado. Commits `ad15ea5`, `7b08726`, `c87b1be`, `d539f0b`.
 - 2026-03-19 (sesión 20): Run 11 = mejor versión hasta la fecha (issue_rate=0.0%, error_events=0). BUG-24 desactivado definitivamente (REALTIME=0). Ghost translations eliminadas (TRANSLATION_CONTEXT_TURNS=0 + _filter_already_emitted_sentences en main.py). Fix capitalización en _merge_fragments. Timing: MERGE_FLUSH_SECONDS 0.70→1.0, COMMIT_MAX_AGE_SECONDS 1.4→1.8. Run 12 pendiente para validar mejoras de calidad.
 - 2026-03-19 (sesión 20, segundo Claude — bugs P2): ✅ BUG-14 (deque maxlen), BUG-15 (assert workers), BUG-17 (reset_context + buffer.clear), BUG-19 (load_dotenv try/except), BUG-21 (TARGET_LANGUAGE validación), BUG-22 (requirements.txt upper bounds), F06 confirmado limpio.
+- 2026-03-20 (sesión 21 — Claude paralelo overlay): MM-01/02 Meeting Mode (bypass traducción, STT directo, timestamps relativos, summary post-sesión). native_vibrancy.py (NSVisualEffectView HUD via pyobjc). Commit e8986e5.
+- 2026-03-20 (sesión 21 — este Claude — calidad traducción): Prompt traducción simplificado 10→5 reglas (eliminadas reglas redundantes con TURNS=0). TRANSLATION_MAX_TOKENS 80→120 (fix frases cortadas). Decisión: TRANSLATION_CONTEXT_TURNS permanece en 0 — ghost translation es comportamiento del modelo, no del prompt.

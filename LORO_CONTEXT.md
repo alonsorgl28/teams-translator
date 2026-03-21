@@ -1,6 +1,6 @@
 # LORO — Compact Context
 > Cargar al inicio de cada sesión junto con CLAUDE.md.
-> Última actualización: 2026-03-19 (sesión 20 — dos Claudes en paralelo)
+> Última actualización: 2026-03-21 (sesión 22)
 
 ---
 
@@ -19,9 +19,10 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 | `audio_listener.py` | Captura chunks de audio del sistema via sounddevice. Soporta VAD (Silero) o chunks fijos. Requiere BlackHole (mac) / VB-Cable (win). | ~340 |
 | `vad.py` | Voice Activity Detection con Silero VAD. Segmenta audio por boundaries de voz en vez de tiempo fijo. | ~170 |
 | `transcription_service.py` | STT via OpenAI. Primario: `gpt-4o-mini-transcribe`. Fallback: `whisper-1`. Batch (activo) + Realtime (BUG-24 pendiente modelo). | ~480 |
-| `translation_service.py` | Traducción via `gpt-4o-mini`. Preserva términos técnicos y números. Context window corto. | ~300 |
-| `overlay_ui.py` | PyQt6. Dos modos: `cinema` (subtítulos grandes) y `list` (scroll). Always-on-top, draggable, resize. | ~900 |
-| `main.py` | Orquestación async (qasync). Dedup, rolling buffer 60min, control de backlog, métricas. | ~600 |
+| `translation_service.py` | Traducción via `gpt-4o-mini`. Prompt simplificado (5 reglas). Context window corto (TURNS=0). | ~300 |
+| `overlay_ui.py` | PyQt6. Dos modos: `cinema` (subtítulos grandes) y `list` (scroll). Always-on-top, draggable, resize. Meeting Mode button + summary label. | ~1080 |
+| `main.py` | Orquestación async (qasync). Dedup, rolling buffer 60min, control de backlog, métricas. Meeting Mode bypass. | ~640 |
+| `native_vibrancy.py` | Inyecta NSVisualEffectView en macOS via pyobjc (material HUD, corner_radius 22). | ~115 |
 | `config_utils.py` | Helpers para leer variables de entorno con tipos. | ~50 |
 | `metrics_reporter.py` | Guarda métricas por segmento en JSONL + resumen JSON. | ~150 |
 
@@ -42,7 +43,8 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 | `MAX_SEGMENT_STALENESS_SECONDS` | 1.5 | Descarta segmentos viejos antes de procesar (subido de 1.0 en sesión #18) |
 | `REALTIME_TRANSCRIPTION_ENABLED` | **0** | Desactivado — SDK instalado tiene bug con `connect()`. No reactivar hasta resolver versión. |
 | `REALTIME_SESSION_MODEL` | gpt-4o-mini-transcribe | Modelo para Realtime API (cuando se reactive). |
-| `TRANSLATION_CONTEXT_TURNS` | **0** | ⚠️ MANTENER EN 0. Con valor 1-2, gpt-4o-mini incluye historial completo en output (ghost translations). Solo subir si se reescribe el prompt de forma que lo prevenga. |
+| `TRANSLATION_MAX_TOKENS` | **120** | Subido de 80 en sesión 21. El inglés→español expande ~15-20%; 80 tokens cortaba frases largas. |
+| `TRANSLATION_CONTEXT_TURNS` | **0** | ⚠️ MANTENER EN 0. Con valor 1-2, gpt-4o-mini incluye historial completo en output (ghost translations). No es problema de prompt — es comportamiento del modelo. No reactivar. |
 | `PREMIUM_TRIGGER_SCORE` | 1.5 | Score mínimo para usar modelo premium |
 | `PREMIUM_MAX_RATIO` | 0.10 | Cap de segmentos premium por sesión (10%) |
 | `FILTER_GIBBERISH` | 1 | Filtra transcripciones sin sentido |
@@ -50,27 +52,26 @@ Pipeline: captura audio del sistema → STT → traducción → overlay flotante
 
 ---
 
-## 4. Estado actual — Mar 2026 (sesión 20) — RUN 11 = MEJOR VERSIÓN
+## 4. Estado actual — Mar 2026 (sesión 21) — BASE: RUN 11, MEJORAS DE CALIDAD PENDIENTES VALIDACIÓN
 
 **Progreso:** 93% (F9 en curso, F10 pendiente)
 
 | Área | Estado | Notas |
 |------|--------|-------|
 | Audio capture | ✅ Estable | BlackHole requerido en macOS. VAD disponible (VAD_ENABLED=1) |
-| STT batch | ✅ Estable | Runs 7+8 ejecutados. avg=2.54s, p95=3.09s |
-| STT realtime | ⬜ Desactivado | BUG-24 — SDK bug con `connect()`. Desactivado en Run 11. Batch suficiente. |
-| Traducción | 🟡 Mejora pendiente | gpt-4o-mini. TURNS=0 (ghost fix). Run 11 issue_rate=0%. Quedan frases cortadas. |
-| Overlay UI | ✅ Estable | Modo cinema/list. Siempre on-top, draggable. `full_transcript_buffer` con Lock. |
-| macOS cocoa plugin | ✅ Resuelto definitivo | PyQt6 pineado a 6.7.1 (6.8.x rompe cocoa en Sequoia). run.sh tiene auto-repair. |
-| Latencia end-to-end | ✅ Medida (Run 11) | avg=2.81s, p50=3.16s, p95=3.94s, max=4.59s |
-| Stale drops (emit) | 🟢 Mitigado | STALE_EMIT_RELAX_FACTOR=1.55 en .env (threshold ~4.65s) |
-| Premium ratio | ✅ Cap corregido | Lógica `_select_route` revisada — cap siempre gana sobre force_premium |
-| Worker stability | ✅ Mejorado | Queue.get() con timeout 5s. Exceptions loguean tipo+mensaje real. |
-| Segmentación | 🟡 Tuning en progreso | COMMIT_MIN_WORDS=7, MERGE_MAX_WORDS=32, MIN_EMIT_WORDS=6 |
+| STT batch | ✅ Estable | Run 11: avg=2.81s, p95=3.94s, issue_rate=0% |
+| STT realtime | ⬜ Desactivado | BUG-24 — SDK bug. Batch suficiente. Latencia ~2.5-4s es floor arquitectural con batch. |
+| Traducción | 🟡 Validación pendiente | Prompt simplificado 10→5 reglas (s21). MAX_TOKENS 80→120 (s21). Run 12 pendiente. |
+| Overlay UI | ✅ Estable + Meeting Mode | Meeting Mode (MM-01/02): bypass traducción, STT directo, timestamps relativos, summary. |
+| macOS vibrancy | ✅ Implementado | `native_vibrancy.py` — NSVisualEffectView HUD via pyobjc (sesión 21, Claude paralelo). |
+| macOS cocoa plugin | ✅ Resuelto definitivo | PyQt6 pineado a 6.7.1. run.sh tiene auto-repair. |
+| Latencia end-to-end | ✅ Medida (Run 11) | avg=2.81s, p50=3.16s, p95=3.94s. Floor ~2.5s con batch STT. |
+| Stale drops (emit) | 🟢 Mitigado | STALE_EMIT_RELAX_FACTOR=1.55 (threshold ~4.65s) |
+| Premium ratio | ✅ Cap corregido | `_select_route` — cap siempre gana sobre force_premium |
+| Worker stability | ✅ Estable | Queue.get() con timeout 5s. Exception logging correcto. |
 | Pipeline analytics | ✅ Disponible | parse_pipeline.py — breakdown por etapa, modo --compare |
 | Packaging (PyInstaller) | ⬜ Pendiente | F07/F08 no iniciados |
 | Monetización | ⬜ Pendiente | $15/mes + 7 días gratis, Dodo Payments |
-| Análisis competitivo | ✅ Hecho | `Loro/Competitive-Analysis.md` — Seagull, Wordly, JotMe, DeepL |
 
 ---
 
@@ -132,11 +133,13 @@ BUG-16 (regex sin tests), BUG-20 (estado corrupto en buffer)
 
 ## 7. Próximos pasos inmediatos
 
-1. **Run 12** — validar Fix B (capitalización merge + timing): ¿menos frases cortadas?
-2. **Calidad de traducción** — evaluar TRANSLATION_CONTEXT_TURNS=1 con prompt mejorado (sin ghost)
-3. **BUG-16** — regex sin tests: agregar cobertura en `translation_service.py`
-4. **BUG-20** — estado corrupto en buffer: investigar y fijar
+1. **Run 12** — validar prompt simplificado + MAX_TOKENS=120: ¿menos frases cortadas? ¿mejor fluidez?
+2. **BUG-16** — regex sin tests: agregar cobertura en `translation_service.py`
+3. **BUG-20** — estado corrupto en buffer: investigar y fijar
+4. **Meeting Mode** — validar en uso real (commit e8986e5 en rama `codex/rebrand-to-loro`)
 5. **F07/F08** — packaging PyInstaller macOS + Windows
+
+> ⚠️ TRANSLATION_CONTEXT_TURNS=1 — descartado. El ghost translation es comportamiento del modelo gpt-4o-mini, no un problema de prompt. No reintentar.
 
 ---
 
